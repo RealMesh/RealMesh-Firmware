@@ -2,6 +2,8 @@
 
 This directory contains the ESP32/Arduino implementation of RealMesh for Heltec V3 devices.
 
+![RealMesh Network Architecture](realmesh-network.svg)
+
 ## Quick Start
 
 1. Install PlatformIO

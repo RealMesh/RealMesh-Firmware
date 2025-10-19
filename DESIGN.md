@@ -1,283 +1,426 @@
-# RealMesh - Design Decisions
+# RealMesh - дизајн и архитектура
 
-## Project Overview
-RealMesh is a simplified, efficient mesh networking system for Heltec V3 devices on EU 868MHz, designed to solve network congestion issues in existing mesh solutions.
+## Преглед пројекта
+RealMesh је поједностављен, ефикасан mesh систем за Heltec V3 уређаје на EU 868MHz, дизајниран да реши проблеме загушења мреже у постојећим mesh решењима.
 
-## Core Architecture
+## Основна архитектура
 
-### Node Addressing & Subdomains
-- **Format**: `nodeID@subdomain`
-- **Examples**: 
-  - `nicole1@beograd` (mobile)
-  - `node1@zeleznik` (stationary) 
-  - `node2@zeleznik` (mobile)
-- **Purpose**: Enables hierarchical routing and local network optimization
-- **Self-assignment**: Nodes choose their own nodeID and subdomain names
-- **Uniqueness enforcement**: Nodes within same subdomain must have unique nodeID
-  - Existing @subdomain nodes notify new joiners of name conflicts
-  - Conflicted nodes must change their nodeID before being accepted
-  - Only nodes with unique names participate in routing
+![RealMesh Network Architecture](realmesh-network.svg)
 
-### Node Types
-- **Stationary**: Act as routing hubs, maintain comprehensive path tables
-- **Mobile**: Use flood when moving, learn paths when static
-- **Behavior**: Mobile nodes can temporarily act stationary when settled
+### Адресирање чворова и хијерархија
+- **Формат**: `чвор@подмрежа.област` (node@subnet.area)
+- **Примери**: 
+  - `никола1@београд.србија` (мобилни)
+  - `чвор1@железник.београд` (стациони) 
+  - `чвор2@железник.београд` (мобилни)
+- **Намена**: Омогућава хијерархијско рутирање и локалну оптимизацију мреже
+- **Самоодређивање**: Чворови сами бирају своје ID и подмрежу
+- **Јединственост**: Чворови у истој подмрежи морају имати јединствене ID
+  - Постојећи чворови обавештавају о конфликту имена
+  - Чворови у конфликту морају променити ID пре прихватања
+  - Само чворови са јединственим именима учествују у рутирању
 
-## Routing Strategy
+### Типови чворова
 
-### Path Memory & Expiry
-- **Duration**: Nodes remember paths indefinitely until they fail
-- **Failure handling**: After 2-3 failed direct attempts, fallback to flood routing
-- **Path updates**: Successful routes via intermediary nodes update path tables
+#### Клијентски чворови
+- **Функција**: Једноставан mesh режим без сложеног рутирања
+- **Понашање**: Шаљу пакете и не брину где ће ићи ван локалне мреже
+- **Меморија**: Не памте руте - раде у ad-hoc mesh режиму
+- **Подмрежа**: Могу радити без подешене подмреже (аутоматски додељивање)
+- **Мобилност**: Природно мобилни, могу се кретати између подмрежа
 
-### Message Retry Logic
-1. **First attempt**: Direct path (if known)
-2. **Second attempt**: Direct path with "second retry" flag
-3. **Intermediary help**: Stationary nodes in target subdomain assist on "second retry"
-4. **Path learning**: Successful intermediary routes become new primary paths
-5. **Third+ attempts**: Flood routing
+#### Магистрални чворови
+- **Функција**: Рутирање између подмрежа и области
+- **Ресурси**: Захтевају више меморије за табеле рута
+- **Одговорност**: Памте руте само између других магистралних чворова
+- **Филтрирање**: Контролишу шта излази из локалне мреже у глобалну
+- **Типови**:
+  - **Чисти магистрални**: Само рутирање
+  - **Хибридни**: И клијент и магистрални функције
 
-### Subdomain Routing Intelligence
-When `node1@sremcica` → `node2@zeleznik`:
-1. Direct attempt fails
-2. Second retry with subdomain flag
-3. `node1@zeleznik` sees message for @zeleznik subdomain
-4. `node1@zeleznik` forwards to `node2@zeleznik`
-5. Success acknowledgment updates path: `node1@sremcica` → `node1@zeleznik` → `node2@zeleznik`
-6. Future messages use learned intermediary path
+#### Комбиновани чворови
+- **Случај употребе**: Мала група (планинари) која жели глобалну доступност
+- **Функција**: Један чвор обавља и клијентску и магистралну улогу
+- **Ограничења**: Делимична магистрална функционалност
 
-### Path Storage
-- **Primary path**: Most recent successful route
-- **Backup path**: Previous working route (kept for redundancy)
-- **Intermediary memory**: Stationary nodes remember which connections they facilitated
-  - Track: "I am the bridge between nodeA@domainX and nodeB@domainY"
-  - Enables proactive routing optimization and faster path discovery
+## Стратегија рутирања
 
-### Path Table Management
-- **Stationary nodes**: Remember as many destinations as memory allows (high capacity)
-- **Mobile nodes**: Remember paths but with different failure handling:
-  - After first direct attempt fails → immediate flood fallback
-  - Less aggressive path caching to account for mobility
+### Дводелна архитектура рутирања
 
-## Message Types
+#### Локални mesh (клијентски чворови)
+- **Понашање**: Класичан mesh без сложеног рутирања
+- **Хопови**: Ограничено на максимум 3 хопа (препорука: 1)
+- **Без табела рута**: Клијенти не памте руте ван локалне мреже
+- **Једноставност**: Минимални хардверски захтеви
 
-### 1. Data Messages
-- **Direct**: Point-to-point with known path
-- **Subdomain**: Targeted to subdomain with intermediary help
-- **Flood**: Broadcast when direct methods fail
+#### Магистрално рутирање
+- **Одговорност**: Само магистрални чворови раде међуподмрежно рутирање
+- **Табеле**: Памте руте између подмрежа/области, не између свих чворова
+- **Ефикасност**: Драстично смањене меморијске потребе
 
-### 2. Control Messages
-- **Heartbeat**: Periodic topology announcements
-- **ACK/NACK**: Delivery confirmations
-- **Route Discovery**: Path finding requests
-- **Path Update**: Successful route notifications
+### Паметно откривање рута
 
-### 3. Priority Levels
-1. **Emergency**: Immediate transmission, can interrupt other traffic
-2. **Direct**: Personal messages, higher priority than public
-3. **Public Chat**: General channel, lowest priority
-4. **Control**: Network maintenance, scheduled transmission
+#### На захтев (query-based)
+```
+Чвор1: "Ко има руту до @железник.београд?"
+Магистрални: "Ја могу, 3 хопа, 150ms одзив"
+```
 
-## Message Queuing & Dropping
+#### Избегавање heartbeat загушења
+- **Нема периодичних објава**: Супротно од Meshtastic heartbeat проблема
+- **Реактивно**: Упити само када је потребна рута
+- **Слушање**: Сви чворови ажурирају табеле на основу чутих одговора
 
-### Queue Management
-- **Emergency queue**: Never drops, always transmits first
-- **Direct queue**: Limited size (e.g., 10 messages), FIFO with age-based dropping
-- **Public queue**: Small size (e.g., 5 messages), aggressive dropping
-- **Control queue**: Scheduled, can be delayed but not dropped
+#### Објаве промена (announce)
+- **Нове везе**: Магистрални чвор објављује нове доступне подмреже
+- **Губитак везе**: Обавештење о недоступним рутама
+- **Ретко**: Дневне провере као резерва (ако нема саобраћаја)
 
-### Dropping Strategies
-- **Age-based**: Drop messages older than threshold (e.g., 5 minutes for chat)
-- **Priority-based**: Drop lower priority when queues full
-- **Duplicate detection**: Drop repeated messages (based on hash)
-- **Congestion response**: Increase dropping aggressiveness when network busy
+### Складиштење рута
 
-## Network Discovery
+#### Магистрални чворови - компактне табеле
+```
+одредишна_подмрежа: железник.београд
+релеј_чвор: чвор5@авала.београд
+број_хопова: 3
+просечно_време: 150ms
+последња_употреба: timestamp
+```
 
-### New Node Join
-1. **Initial announcement**: Broadcast chosen `nodeID@subdomain`
-2. **Uniqueness check**: Existing @subdomain nodes respond if name conflict exists
-3. **Name resolution**: If conflict, node must choose new unique nodeID
-4. **Acceptance**: Once unique, node is accepted into subdomain routing
-5. **Topology discovery**: Receive routing information from nearby stationary hubs
-6. **Integration**: Gradually build routing table through message attempts
+#### Више рута до истог одредишта
+- **Резервне руте**: За отказивање главне
+- **Статичке руте**: Планско подешавање за стабилну инфраструктуру
+- **Динамичке**: Аутоматско откривање
+- **Квалитет**: Праћење статистике успешности
 
-### Topology Maintenance
-- **Stationary node heartbeats**: Every 5-10 minutes, broadcast:
-  - Own existence and status
-  - List of nodes in direct contact within their subdomain
-  - Available paths to other subdomains they can bridge
-  - "I am a stationary hub for @subdomain" announcements
-- **Mobile node heartbeats**: Less frequent, mainly presence announcements
-- **Event-driven updates**: When routes change or nodes move
-- **Topology sharing**: Stationary nodes act as subdomain routing authorities
+### Аутоматско додељивање подмрежа
+- **Клијенти без подмреже**: Магистрални чворови им додељују локалну подмрежу
+- **Мобилност**: Аутоматска прена подмреже при кретању
+- **Повратак одговора**: Могућ упркос промени локације
 
-## Congestion Management
+## Типови порука
 
-### Back-off Algorithms
-- **Exponential back-off**: For failed transmissions
-- **Random jitter**: Prevent synchronized retransmissions
-- **Network sensing**: Listen before transmit
+### 1. Корисничке Поруке
+- **Директне**: Приватне поруке између чворова
+- **Јавни канали**: Broadcast поруке у каналима
+- **Хитне**: Приоритетне поруке које прекидају остали саобраћај
+- **Custom**: Кориснички дефинисани типови
 
-### Load Balancing
-- **Path selection**: Use backup paths when primary is congested
-- **Subdomain distribution**: Route through different subdomains when possible
-- **Time-based spreading**: Delay non-urgent messages during peak times
+### 2. Системске Поруке
+- **ACK/NACK**: Потврде достављања
+- **ROUTE_QUERY**: "Ко има руту до X?"
+- **ROUTE_ANNOUNCE**: Објава нових/изгубљених рута
+- **HEALTH_CHECK**: "Ко ме чује?" (ретко, на захтев)
+- **CONTROL**: Управљање мрежом
 
-## Technical Implementation Notes
+### Конфигурабилни приоритети
 
-### For PoC
-- Single radio profile (125kHz, SF7-SF9)
-- Focus on routing intelligence over physical optimization
-- Heltec V3 ESP32 target platform
-- EU 868MHz frequency band
+#### Систем приоритета
+- **Нумерички**: 0-255 (већи број = виши приоритет)
+- **Подешавање по типу**: Сваки чвор може конфигурисати приоритете
+- **Override**: Магистрални чворови могу мењати приоритете
 
-### Future Enhancements
-- Multiple transmission profiles
-- Advanced congestion algorithms
-- Mobile node movement prediction
-- Cross-frequency coordination
+#### Примери конфигурације
+```
+EMERGENCY: 255 (максимални)
+DIRECT: 128 (средnji)
+PUBLIC: 64 (низак)
+CUSTOM_TYPE_A: 200 (високо за локалну мрежу)
+CONTROL: 32 (системски)
+```
 
----
+#### Приоритетно деградирање
+- **Магистрални филтер**: Custom типови се "пеглају" на глобалној мрежи
+- **Локална слобода**: Висок приоритет у локалној подмрежи
+- **Глобална дисциплина**: Умерен приоритет ван локалне мреже
 
-## Security & Authentication
+## Управљање редовима и одбацивање порука
 
-### Message Authentication
-- **Direct messages**: Encrypted using public-private key pairs
-- **Public messages**: Unencrypted (broadcast nature)
-- **Node verification**: Trust-based on acknowledgment responses
-  - If node acknowledges re-broadcast, we trust their routing capability
-  - Failed acknowledgments reduce trust and trigger alternate routing
+### Управљање редовима
+- **Хитни ред**: Никад се не одбацује, увек се шаље први
+- **Директни ред**: Ограничена величина (нпр. 10 порука), FIFO са одбацивањем по старости
+- **Јавни ред**: Мала величина (нпр. 5 порука), агресивно одбацивање
+- **Системски ред**: Планирано слање, може кашњење али не одбацивање
 
-### Encryption Strategy
-- **Private messages only**: Direct node-to-node communication encrypted
-- **Public channels**: Remain unencrypted for network efficiency
-- **Key exchange**: Nodes exchange public keys during initial handshake
+### Стратегије одбацивања
+- **По старости**: Одбаци поруке старије од прага (нпр. 5 минута за chat)
+- **По приоритету**: Одбаци нижи приоритет када су редови пуни
+- **Детекција дуплирања**: Одбаци поновљене поруке (на основу hash-а)
+- **Одговор на загушење**: Повећај агресивност одбацивања када је мрежа заузета
 
-## Message Packet Format
+## Систем за чување порука
 
-### Header Structure
-- **Message ID**: 32-bit unique identifier for tracking/deduplication
-- **Source**: Full nodeID@subdomain address
-- **Destination**: Target nodeID@subdomain (or @subdomain for local broadcast)
-- **Message Type**: DATA/CONTROL/HEARTBEAT/ACK/EMERGENCY
-- **Priority**: EMERGENCY/DIRECT/PUBLIC/CONTROL
-- **Routing Flags**: DIRECT/SUBDOMAIN_RETRY/FLOOD/INTERMEDIARY_ASSIST
-- **Hop Count**: Tracks message propagation distance
-- **Timestamp**: For age-based dropping and ordering
+### Посебна архитектура за message store
+- **Није посао чворова**: Краткорочно чување за поузданост ≠ дугорочно архивирање
+- **Специјални хардвер**: Посебни чворови са ресурсима за чување
+- **Стандардизовано**: Јединствен протокол за целу мрежу
 
-### Payload Limits
-- **Maximum payload**: 200 bytes (allows for header + substantial message content)
-- **Header overhead**: ~32 bytes
-- **Effective message size**: ~168 bytes for user content
+### Типови message store чворова
+- **BBS чворови**: Bulletin Board систем за јавне поруке
+- **Mail чворови**: Лични сандучићи за приватне поруке  
+- **Archive чворови**: Дугорочно чување за целе подмреже
 
-### Message ID Generation
-- **Format**: NodeID hash + timestamp + sequence counter
-- **Collision prevention**: 32-bit space with temporal and spatial uniqueness
-- **Tracking**: Used for ACK matching and duplicate detection
+### Транспарентност
+- **Клијенту исто**: Исти протокол за слање/примање
+- **Проширене могућности**: Краткорочно → дугорочно чување
+- **Аутоматизација**: BBS апликације за аутоматско преузимање
 
-### Routing Metadata
-- **Path history**: Last 3 hops for loop prevention
-- **Quality metrics**: Signal strength, retry count
-- **Timing info**: Transmission timestamp for latency measurement
+## Откривање мреже
 
-## Conflict Resolution
+### Придружување новог чвора
 
-### Name Conflict & Node Identity
-- **Persistent identity**: Each node generates hidden UUID on first boot
-- **Format**: `nikdale1@cukarica_a81f` (public name + hidden suffix)
-- **Conflict resolution**: 
-  - Active node always wins naming rights
-  - Offline nodes lose name after 72 hours of inactivity
-  - Returning nodes reclaim name using their persistent UUID
-  - UUID prevents impersonation of returning nodes
+#### Клијентски чвор
+1. **Слушање**: 30 секунди слушања пре било какве активности
+2. **Објава**: Broadcast `чвор@подмрежа` (или само `чвор` ако нема подмрежу)  
+3. **Провера јединствености**: Постојећи чворови одговарају ако има конфликта
+4. **Ауто-додељивање**: Ако нема подмрежу, магистрални чвор додељује локалну
+5. **Интеграција**: Постепено учење локалне топологије
 
-### Multiple Stationary Hubs
-- **Cooperative approach**: Multiple stationary hubs in same subdomain is beneficial
-- **Load distribution**: Both can rebroadcast and serve as routing points
-- **Redundancy**: Backup routing capability if one hub fails
-- **Coordination**: Hubs share routing tables and coordinate to prevent loops
+#### Магистрални чвор
+1. **Откривање подмреже**: Идентификује локалне чворове
+2. **Трагање за мостовима**: Активно тражи друге магистралне чворове  
+3. **Успостављање рута**: Гради табеле рута до других подмрежа/области
+4. **Објављивање**: Обавештава о новим доступним рутама
 
-### Tie-breaking Mechanisms
-- **Signal strength**: Stronger signal wins in routing decisions
-- **Response time**: Faster ACK responses get preference
-- **Hop count**: Shorter paths preferred
-- **Node age**: Older established nodes get slight preference
+### Одржавање топологије
 
-## Network Bootstrap & Recovery
+#### Реактивно vs проактивно
+- **Query-driven**: "Ко има руту до X?" када је потребно
+- **Event-driven**: Објаве када се топологија мења
+- **Изузетно ретки heartbeat-ови**: Једном дневно као backup
 
-### Cold Start
-- **First node behavior**: Acts as subdomain founder, accepts all new joiners
-- **Cross-subdomain discovery**: Actively seeks other subdomains for bridging
-- **Authority establishment**: Becomes initial routing authority for subdomain
+#### Здравствене провере
+- **"Ко ме чује?"**: На захтев или ретко аутоматски
+- **Одговор**: Само директно чути чворови
+- **Мануелно покретање**: Могућност ручне дијагностике
 
-### Network Joining
-- **Retry strategy**: 3 attempts with exponential backoff (1s, 3s, 9s)
-- **Fallback**: If no response, assume first node in subdomain
-- **Discovery period**: 30 seconds of listening before claiming founder status
+#### Детекција квара
+- **Пасивно слушање**: Ако дуго нема одговора, провери здравље
+- **Активна провера**: "Да ли си још ту?" специфичном чвору
+- **Уклањање рута**: Брисање неодговорних рута из табела
 
-### Isolation Recovery
-- **Reconnection**: Use same UUID-based identity reclaim process
-- **Route rebuild**: Gradually rediscover paths through message attempts
-- **Priority recovery**: Emergency and direct messages get routing priority during recovery
+## Управљање загушењем
 
-## Emergency Messages (PoC Simplified)
-- **Qualification**: Any message marked emergency by any node
-- **Authorization**: No restrictions for PoC - anyone can send emergency
-- **Validation**: No spam prevention for PoC (trust-based system)
-- **Behavior**: Immediate transmission, interrupts other traffic, flood routing
+### Back-off алгоритми
+- **Експоненцијални back-off**: За неуспешне преносе
+- **Насумични јитер**: Спречава синхронизоване ретрансмисије  
+- **Слушање мреже**: Listen before transmit
+- **Адаптивно кашњење**: Дуже паузе при већем загушењу
 
-## Technical Parameters
+### Балансирање оптерећења
+- **Избор рута**: Користи резервне руте када је главна загушена
+- **Дистрибуција по подмрежама**: Рутирај кроз различите подмреже
+- **Временско размицање**: Одложи не-хитне поруке током врхунца
 
-### Radio Configuration
-- **Frequency**: 868MHz (EU band)
-- **Bandwidth**: 125kHz (maximum for best range)
-- **Spreading Factor**: SF12 (maximum for best sensitivity)
-- **Coding Rate**: 4/5 (good error correction)
-- **TX Power**: 20dBm (maximum allowed)
-- **Preamble**: 8 symbols
-- **Sync Word**: 0x12 (private network)
+### Магистрално филтрирање
 
-### Memory & Timing
-- **Routing table**: Use all available RAM (typically 4000+ entries on ESP32)
-- **ACK timeout**: 10 seconds for direct, 30 seconds for flood
-- **Retry intervals**: 5s, 15s, 45s (exponential backoff)
-- **Heartbeat period**: 300 seconds (5 minutes) for stationary, 900 seconds (15 minutes) for mobile
-- **Message aging**: Drop chat messages older than 10 minutes
+#### Контрола саобраћаја
+- **Типови порука**: Магистрални чвор може игнорисати одређене типове
+- **Блокирани чворови**: Спречи одређене чворове да шаљу у глобалну мрежу
+- **Промена приоритета**: "Пеглај" custom типове на глобалном нивоу
 
-### Range & Network Assumptions
-- **Line of sight**: ~5-15km depending on terrain
-- **Urban environment**: ~1-3km with obstacles
-- **Network diameter**: Assume max 10 hops for any message
-- **Congestion threshold**: >80% channel utilization triggers aggressive dropping
+#### Премапирање канала
+```
+Локално:  Канал 5 = "Железник локални chat"
+Глобално: Канал 5 = "Општи chat Србија"
+→ Магистрални чвор мапира: Локални 5 → Глобални 1
+```
 
-## Graceful Degradation (PoC Strategy)
+#### Фреквенцијски мостови
+- **Будућност**: Два радио модула повезана I2C/серијски
+- **Различити профили**: MEDIUM_FAST ↔ LONG_SLOW  
+- **Различите фреквенције**: 433MHz ↔ 868MHz
+- **Јединствени протокол**: Преко серијске везе
 
-### Overload Handling
-- **Queue prioritization**: Emergency > Direct > Public > Control
-- **Aggressive dropping**: Drop public chat first, then older messages
-- **Back-pressure**: Increase retry delays when network busy
+## Серијска комуникација
 
-### Partial Failures
-- **Route invalidation**: Remove failed paths immediately
-- **Fallback strategy**: Direct → Intermediary → Flood
-- **Recovery**: Gradual path rediscovery through successful message attempts
+### Једноставан интерфејс
+- **Терминал програми**: Комуникација кроз било који серијски терминал
+- **Без сложених протокола**: Једноставни команди и одговори
+- **Дебаговање**: Лако праћење стања мреже и порука
+- **Аутоматизација**: Могућност скриптовања
 
-### Network Partition Recovery
-- **Automatic bridging**: Nodes actively seek cross-subdomain connections
-- **Route advertisement**: Stationary hubs broadcast bridge capabilities
-- **Healing**: Network naturally heals as mobile nodes move between partitions
+### Команде
+```
+SEND nikola@beograd "Помаже Бог!"
+STATUS
+ROUTES
+WHO_HEARS_ME
+DEBUG ON
+```
 
-## Open Questions Remaining
+## Техничке напомене за имплементацију
 
-1. **Cross-subdomain optimization**: Advanced routing between distant subdomains
-2. **Performance tuning**: Real-world optimization of timing parameters
-3. **Scale testing**: Behavior with 100+ nodes in single subdomain
+### За PoC
+- **Један радио профил**: 125kHz, SF12 (максимум за домет)
+- **Фокус на рутирање**: Интелигенција рутирања преко физичке оптимизације  
+- **Heltec V3 ESP32**: Циљна платформа
+- **EU 868MHz**: Фреквенцијски опсег
 
-## Next Steps
+### Будућа побољшања
+- **Више профила преноса**: FAST/MEDIUM/SLOW профили
+- **Напредни алгоритми за загушење**: Адаптивно управљање
+- **Предикција мобилности**: Предвиђање кретања мобилних чворова
+- **Cross-frequency координација**: Мостови између фреквенција
 
-1. Define message packet format
-2. Implement basic LoRa radio layer
-3. Create routing table data structures
-4. Develop path learning algorithms
-5. Build congestion management system
+### Радио конфигурација (флексибилна)
+- **Фреквенција**: 868MHz (EU опсег) 
+- **Bandwidth**: 125kHz (максимум за домет)
+- **Spreading Factor**: SF12 (максимална сензитивност)
+- **Coding Rate**: 4/5 (добра корекција грешака)
+- **TX Power**: 20dBm (максимално дозвољено)
+- **Preamble**: 8 символа
+- **Sync Word**: 0x12 (приватна мрежа)
+
+## Безбедност и аутентификација
+
+### Аутентификација порука
+- **Директне поруке**: Енкриптоване public-private кључевима
+- **Јавне поруке**: Неенкриптоване (broadcast природа)  
+- **Верификација чвора**: На основу поверења у ACK одговоре
+  - Ако чвор потврђује re-broadcast, верујемо му рутну способност
+  - Неуспешни ACK-ови смањују поверење и активирају алтернативе
+
+### Стратегија енкрипције
+- **Само приватне поруке**: Директна комуникација између чворова енкриптована
+- **Јавни канали**: Остају неенкриптовани за ефикасност мреже
+- **Размена кључева**: Чворови размењују јавне кључеве при иницијалном handshake
+
+## Формат пакета порука
+
+### Структура заглавља
+- **Network ID**: 32-bit идентификатор мреже
+- **Area ID**: 32-bit идентификатор области (опционо за хијерархију)
+- **Message ID**: 32-bit инкрементални број за tracking
+- **Source**: Пуна адреса пошаљиоца `чвор@подмрежа.област`
+- **Destination**: Одредишна адреса (или @подмрежа за локални broadcast)
+- **Message Type**: Нумерички (системски 0-127, custom 128-255)
+- **Priority**: 8-bit нумеричка вредност (0-255)
+- **Hop Count**: Праћење дистанце пропагације
+- **Timestamp**: За одбацивање по старости и сортирање
+
+### Ограничења payload-а
+- **Максимални payload**: 200 bytes (заглавље + садржај поруке)
+- **Overhead заглавља**: ~40 bytes (због хијерархије)  
+- **Ефективна величина**: ~160 bytes за кориснички садржај
+
+### Генерисање message ID
+- **Поједностављено**: Инкрементални 32-bit број по чвору
+- **Јединственост**: Адреса + ID = глобално јединствено
+- **Циклус**: Враћа се на 0 након MAX_UINT32
+- **Без hash-ова**: Непотребна сложеност уклоњена
+
+### Рутирање метаподаци
+- **Историја path-а**: Последња 3 хопа за спречавање петљи
+- **Метрике квалитета**: Јачина сигнала, број покушаја
+- **Тајминг инфо**: Timestamp преноса за мерење латенције
+- **Hop ограничење**: 
+  - Mesh: Максимум 3 хопа (препорука 1)
+  - Рутирање: Без ограничења
+
+## Решавање конфликата
+
+### Конфликт имена и идентитет чвора
+- **Перзистентни идентитет**: Сваки чвор генерише скривени UUID при првом покретању
+- **Формат**: `никдале1@чукарица_a81f` (јавно име + скривени суфикс)
+- **Решавање конфликта**: 
+  - Активни чвор увек побеђује у правима на име
+  - Offline чворови губе име након 72 сата неактивности
+  - Чворови који се враћају преузимају име користећи UUID
+  - UUID спречава имперсонацију чворова који се враћају
+
+### Више магистралних чворова
+- **Кооперативни приступ**: Више магистралних чворова у истој подмрежи је корисно
+- **Дистрибуција оптерећења**: Оба могу rebroadcast и служити као рутни чворови
+- **Резервност**: Backup рутирање ако један чвор откаже
+- **Координација**: Чворови деле табеле рута и координирају се да спрече петље
+
+### Механизми за разрешавање
+- **Јачина сигнала**: Јачи сигнал побеђује у рутирању
+- **Време одзива**: Бржи ACK одговори имају предност
+- **Број хопова**: Краће руте су преферисане
+- **Старост чвора**: Старији чворови имају благу предност
+
+## Мрежни bootstrap и опоравак
+
+### Хладни старт
+- **Понашање првог чвора**: Понаша се као оснивач подмреже
+- **Откривање других подмрежа**: Активно тражи друге подмреже за мостове
+- **Успостављање ауторитета**: Постаје почетни рутни ауторитет за подмрежу
+
+### Придружување мрежи
+- **Стратегија поновних покушаја**: 3 покушаја са експоненцијалним back-off (1s, 3s, 9s)
+- **Fallback**: Ако нема одговора, претпостави да си први чвор у подмрежи
+- **Период откривања**: 30 секунди слушања пре захтевања статуса оснивача
+
+### Опоравак од изолације
+- **Поновно повезивање**: Користи исти UUID-based процес враћања идентитета
+- **Поновна изградња рута**: Постепено поново откривање путања кроз покушаје слања порука
+- **Приоритетни опоравак**: Хитне и директне поруке имају приоритет рутирања током опоравка
+
+## Хитне поруке (PoC поједностављено)
+- **Квалификација**: Било која порука означена као хитна од било kog чвора
+- **Ауторизација**: Нема ограничења за PoC - свако може слати хитне поруке
+- **Валидација**: Нема спречавања spam-а за PoC (систем на основу поверења)
+- **Понашanje**: Тренутни пренос, прекида остали саобраћај, flood рутирање
+
+## Технички параметри
+
+### Меморија и тајминг
+- **Табеле рута**: Користи доступну RAM (типично 4000+ уноса на ESP32)
+  - **Магистрални**: Максимално искоришћење меморије  
+  - **Клијентски**: Минимално чување рута
+- **ACK timeout**: 10 секунди за директне, 30 секунди за flood
+- **Интервали поновних покушаја**: 5s, 15s, 45s (експоненцијални back-off)
+- **Период здравствених провера**: Дневно или на захтев (НИКАД heartbeat spam!)
+- **Старење порука**: Одбаци chat поруке старије од 10 минута
+
+### Домет и претпоставке мреже  
+- **Директна видљивост**: ~5-15km у зависности од терена
+- **Урбано окружење**: ~1-3km са препрекама
+- **Пречник мреже**: 
+  - **Mesh**: Максимум 3 хопа (препорука 1)
+  - **Рутирано**: Без ограничења
+- **Праг загушења**: >80% искоришћености канала активира агресивно одбацивање
+
+## Грациозна деградација (PoC стратегија)
+
+### Руковање преоптерећењем
+- **Приоритизација редова**: Хитни > Директни > Јавни > Систем
+- **Агресивно одбацивање**: Прво одбаци јавни chat, затим старе поруке
+- **Back-pressure**: Повећај кашњења када је мрежа заузета
+
+### Парцијални отказ
+- **Поништавање рута**: Уклони неуспешне путање одмах
+- **Fallback стратегија**: Директно → Посредник → Flood
+- **Опоравак**: Постепено поново откривање рута кроз успешне покушаје
+
+### Опоравак од партиције мреже
+- **Аутоматско премошћавање**: Чворови активно траже cross-subdomain везе
+- **Објављивање рута**: Магистрални чворови broadcast способности моста
+- **Самоисцељење**: Мрежа се природно лечи како се мобилни чворови крећу
+
+## Отворена питања  
+
+1. **Cross-subdomain оптимизација**: Напредно рутирање између далеких подмрежа
+2. **Тунирање перформанси**: Реална оптимизација параметара тајминга
+3. **Тестирање скале**: Понашање са 100+ чворова у јединственој подмрежи
+4. **Терминологија**: Стандардизација термина за јасну комуникацију
+
+## Следећи кораци
+
+1. **Дефиниши формат пакета**: Финализуј структуру заглавља
+2. **Имплементирај основни LoRa слој**: Radio layer са РоС параметрима
+3. **Направи структуре табела рута**: Компактне табеле за магистралне чворове
+4. **Развиј алгоритме учења рута**: Query-based откривање
+5. **Изгради систем за загушење**: Адаптивно управљање саобраћајем
+6. **Тестирај архитектуру**: Клијент/Магистрални подела одговорности
+
+## Закључак
+
+Овај дизајн решава кључне проблеме постојећих mesh система:
+- **Скалабилност**: Клијент/Магистрални подела смањује меморијске захтеве
+- **Ефикасност**: Query-based рутирање уместо heartbeat спама
+- **Флексибилност**: Конфигурабилни приоритети и custom типови порука  
+- **Једноставност**: Клијенти раде без сложеног рутирања
+- **Проширивост**: Хијерархијска адресна шема за будући раст
