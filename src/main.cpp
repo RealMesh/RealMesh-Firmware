@@ -45,6 +45,8 @@ void processCLI();
 void processCommand(const String& command);
 void showHelp();
 void showStatus();
+void changeName(const String& args);
+void changeType(const String& args);
 void sendMessage(const String& args);
 void scanNetwork();
 void rebootDevice();
@@ -234,6 +236,10 @@ void processCommand(const String& command) {
     showHelp();
   } else if (cmd == "status") {
     showStatus();
+  } else if (cmd == "name") {
+    changeName(args);
+  } else if (cmd == "type") {
+    changeType(args);
   } else if (cmd == "send") {
     sendMessage(args);
   } else if (cmd == "scan") {
@@ -252,6 +258,10 @@ void showHelp() {
   Serial.println("  help              - Show this help");
   Serial.println("  status            - Show node status");
   Serial.println("  reboot            - Restart device");
+  Serial.println("");
+  Serial.println("Configuration:");
+  Serial.println("  name <id> <domain> - Change node name and domain");
+  Serial.println("  type <mobile|stationary> - Change node type");
   Serial.println("");
   Serial.println("Messaging:");
   Serial.println("  send <addr> <msg> - Send message to address");
@@ -316,6 +326,89 @@ void scanNetwork() {
     // Show network statistics
     Serial.println();
     meshNode->printNetworkInfo();
+  } else {
+    Serial.println("ERROR: Node not initialized");
+  }
+}
+
+void changeName(const String& args) {
+  if (args.isEmpty()) {
+    Serial.println("Usage: name <nodeId> <domain>");
+    Serial.println("Example: name mynode home");
+    return;
+  }
+  
+  int spaceIndex = args.indexOf(' ');
+  if (spaceIndex <= 0) {
+    Serial.println("Error: Both nodeId and domain required");
+    Serial.println("Usage: name <nodeId> <domain>");
+    return;
+  }
+  
+  String nodeId = args.substring(0, spaceIndex);
+  String domain = args.substring(spaceIndex + 1);
+  nodeId.trim();
+  domain.trim();
+  
+  if (nodeId.isEmpty() || domain.isEmpty()) {
+    Serial.println("Error: Both nodeId and domain must be non-empty");
+    return;
+  }
+  
+  if (meshNode) {
+    Serial.printf("Changing name from %s to %s@%s\n", 
+                  meshNode->getOwnAddress().getFullAddress().c_str(),
+                  nodeId.c_str(), domain.c_str());
+    
+    meshNode->setDesiredName(nodeId, domain);
+    Serial.println("Name change initiated. Reboot required to apply changes.");
+    Serial.println("Use 'reboot' command to restart with new identity.");
+    
+    showTemporaryMessage("Name Changed", "New: " + nodeId + "@" + domain, "Reboot to apply", 5000);
+  } else {
+    Serial.println("ERROR: Node not initialized");
+  }
+}
+
+void changeType(const String& args) {
+  if (args.isEmpty()) {
+    Serial.println("Usage: type <mobile|stationary>");
+    Serial.println("  mobile     - Node moves frequently");
+    Serial.println("  stationary - Node stays in fixed location");
+    return;
+  }
+  
+  String type = args;
+  type.trim();
+  type.toLowerCase();
+  
+  if (meshNode) {
+    bool currentStationary = meshNode->isStationary();
+    String currentType = currentStationary ? "stationary" : "mobile";
+    
+    if (type == "mobile") {
+      if (!currentStationary) {
+        Serial.println("Node is already mobile");
+        return;
+      }
+      meshNode->setStationary(false);
+      Serial.println("Changed node type from stationary to mobile");
+      showTemporaryMessage("Type Changed", "Now: Mobile", "Moves frequently", 3000);
+    } else if (type == "stationary") {
+      if (currentStationary) {
+        Serial.println("Node is already stationary");
+        return;
+      }
+      meshNode->setStationary(true);
+      Serial.println("Changed node type from mobile to stationary");
+      showTemporaryMessage("Type Changed", "Now: Stationary", "Fixed location", 3000);
+    } else {
+      Serial.println("Error: Invalid type '" + type + "'");
+      Serial.println("Valid types: mobile, stationary");
+      return;
+    }
+    
+    Serial.println("Type change applied immediately");
   } else {
     Serial.println("ERROR: Node not initialized");
   }

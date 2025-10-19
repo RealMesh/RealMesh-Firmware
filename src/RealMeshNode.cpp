@@ -65,6 +65,40 @@ bool RealMeshNode::begin(const String& desiredNodeId, const String& desiredSubdo
         this->desiredSubdomain = desiredSubdomain;
     }
     
+    // Load previously stored desired names if available
+    nvs_handle_t nvs_handle;
+    esp_err_t err = nvs_open(STORAGE_NAMESPACE, NVS_READONLY, &nvs_handle);
+    if (err == ESP_OK) {
+        size_t required_size = 0;
+        
+        // Load desired node ID
+        err = nvs_get_str(nvs_handle, "desired_node", NULL, &required_size);
+        if (err == ESP_OK && required_size > 0) {
+            char* buffer = (char*)malloc(required_size);
+            if (nvs_get_str(nvs_handle, "desired_node", buffer, &required_size) == ESP_OK) {
+                if (this->desiredNodeId.isEmpty()) {
+                    this->desiredNodeId = String(buffer);
+                }
+            }
+            free(buffer);
+        }
+        
+        // Load desired subdomain
+        required_size = 0;
+        err = nvs_get_str(nvs_handle, "desired_sub", NULL, &required_size);
+        if (err == ESP_OK && required_size > 0) {
+            char* buffer = (char*)malloc(required_size);
+            if (nvs_get_str(nvs_handle, "desired_sub", buffer, &required_size) == ESP_OK) {
+                if (this->desiredSubdomain.isEmpty()) {
+                    this->desiredSubdomain = String(buffer);
+                }
+            }
+            free(buffer);
+        }
+        
+        nvs_close(nvs_handle);
+    }
+    
     // Try to load existing identity, create new if needed
     if (!loadStoredIdentity()) {
         Serial.println("[NODE] No stored identity found, creating new identity");
@@ -472,6 +506,26 @@ bool RealMeshNode::validateStoredIdentity() {
     return isValidNodeId(ownAddress.nodeId) && 
            isValidSubdomain(ownAddress.subdomain) &&
            ownAddress.uuid.bytes[0] != 0; // UUID should not be all zeros
+}
+
+void RealMeshNode::setDesiredName(const String& nodeId, const String& subdomain) {
+    // Store the desired names for next boot
+    desiredNodeId = nodeId;
+    desiredSubdomain = subdomain;
+    
+    // Save to NVS immediately for persistence across reboots
+    nvs_handle_t nvs_handle;
+    esp_err_t err = nvs_open(STORAGE_NAMESPACE, NVS_READWRITE, &nvs_handle);
+    if (err == ESP_OK) {
+        nvs_set_str(nvs_handle, "desired_node", nodeId.c_str());
+        nvs_set_str(nvs_handle, "desired_sub", subdomain.c_str());
+        nvs_commit(nvs_handle);
+        nvs_close(nvs_handle);
+        
+        Serial.printf("[NODE] Stored desired name: %s@%s\n", nodeId.c_str(), subdomain.c_str());
+    } else {
+        Serial.printf("[NODE] ERROR: Failed to store desired name: %s\n", esp_err_to_name(err));
+    }
 }
 
 void RealMeshNode::startNetworkDiscovery() {
