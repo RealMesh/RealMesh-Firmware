@@ -1,6 +1,15 @@
 #include "RealMeshEinkDisplay.h"
 #include "RealMeshConfig.h"
 
+// Pin definitions for Heltec Wireless Paper
+#define PIN_EINK_CS      4
+#define PIN_EINK_DC      5
+#define PIN_EINK_RES     6   // Meshtastic uses pin 6 for RST
+#define PIN_EINK_BUSY    7   // Meshtastic uses pin 7 for BUSY
+#define PIN_EINK_SCLK    3
+#define PIN_EINK_MOSI    2
+#define PIN_VEXT_ENABLE  45  // Power enable pin (active LOW)
+
 // Global variables
 SPIClass* hspi = nullptr;
 GxEPD2_Display* display = nullptr;
@@ -31,7 +40,7 @@ bool initializeEinkDisplay()
     display->init();
     display->setRotation(3);  // Landscape orientation
     
-    Serial.printf("📐 Display ready: %dx%d\n", EINK_WIDTH, EINK_HEIGHT);
+    Serial.printf("📐 Display ready: %dx%d\n", 250, 122);
     Serial.println("✅ RealMesh eInk display initialized!");
     
     return true;
@@ -61,7 +70,7 @@ void showStartupScreen()
         int16_t tbx, tby; 
         uint16_t tbw, tbh;
         display->getTextBounds(titleText, 0, 0, &tbx, &tby, &tbw, &tbh);
-        int titleX = (EINK_WIDTH - tbw) / 2;
+        int titleX = (250 - tbw) / 2;
         display->setCursor(titleX, 30);
         display->print(titleText);
         

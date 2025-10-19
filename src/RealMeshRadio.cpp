@@ -163,8 +163,8 @@ void RealMeshRadio::processIncoming() {
             Serial.printf("[RADIO] Failed to deserialize packet (%d bytes)\n", data.size());
             receiveErrors++;
         }
-    } else if (state != RADIOLIB_ERR_RX_TIMEOUT) {
-        // Handle reception errors (ignore timeouts as they're normal)
+    } else if (state != RADIOLIB_ERR_RX_TIMEOUT && state != RADIOLIB_ERR_NONE) {
+        // Handle reception errors (ignore timeouts and "no data" as they're normal)
         handleReceiveError(state);
     }
 }
@@ -296,8 +296,11 @@ void RealMeshRadio::updateStatistics(bool sent, bool success, size_t bytes) {
 }
 
 void RealMeshRadio::handleReceiveError(int state) {
-    receiveErrors++;
-    Serial.printf("[RADIO] Receive error: %s\n", getRadioStateString(state).c_str());
+    // Only log and count actual errors, not "Success" or timeout states
+    if (state != RADIOLIB_ERR_NONE && state != RADIOLIB_ERR_RX_TIMEOUT) {
+        receiveErrors++;
+        Serial.printf("[RADIO] Receive error: %s\n", getRadioStateString(state).c_str());
+    }
 }
 
 void RealMeshRadio::handleTransmitError(int state) {

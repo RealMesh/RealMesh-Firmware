@@ -2,6 +2,8 @@
 #include "RealMeshConfig.h"
 #include <esp_random.h>
 #include <esp_system.h>
+#include <nvs_flash.h>
+#include <nvs.h>
 #include <vector>
 #include <algorithm>
 
@@ -10,7 +12,7 @@
 // ============================================================================
 
 // Storage keys
-const char* RealMeshNode::STORAGE_NAMESPACE = "realmesh";
+const char* RealMeshNode::STORAGE_NAMESPACE = "rm";
 const char* RealMeshNode::KEY_NODE_ID = "node_id";
 const char* RealMeshNode::KEY_SUBDOMAIN = "subdomain";
 const char* RealMeshNode::KEY_UUID = "uuid";
@@ -274,31 +276,65 @@ void RealMeshNode::printNodeInfo() {
 // Private implementation
 
 bool RealMeshNode::loadStoredIdentity() {
-    if (!preferences.begin(STORAGE_NAMESPACE, true)) {
+    // Use NVS directly
+    nvs_handle_t nvs_handle;
+    esp_err_t err = nvs_open(STORAGE_NAMESPACE, NVS_READONLY, &nvs_handle);
+    if (err != ESP_OK) {
         return false;
     }
     
-    String storedNodeId = preferences.getString(KEY_NODE_ID, "");
-    String storedSubdomain = preferences.getString(KEY_SUBDOMAIN, "");
+    // Try to load node ID
+    size_t required_size = 0;
+    err = nvs_get_str(nvs_handle, KEY_NODE_ID, NULL, &required_size);
+    if (err != ESP_OK || required_size == 0) {
+        nvs_close(nvs_handle);
+        return false;
+    }
     
-    if (storedNodeId.isEmpty() || storedSubdomain.isEmpty()) {
-        preferences.end();
+    char* nodeId = (char*)malloc(required_size);
+    err = nvs_get_str(nvs_handle, KEY_NODE_ID, nodeId, &required_size);
+    if (err != ESP_OK) {
+        free(nodeId);
+        nvs_close(nvs_handle);
+        return false;
+    }
+    
+    // Try to load subdomain
+    required_size = 0;
+    err = nvs_get_str(nvs_handle, KEY_SUBDOMAIN, NULL, &required_size);
+    if (err != ESP_OK || required_size == 0) {
+        free(nodeId);
+        nvs_close(nvs_handle);
+        return false;
+    }
+    
+    char* subdomain = (char*)malloc(required_size);
+    err = nvs_get_str(nvs_handle, KEY_SUBDOMAIN, subdomain, &required_size);
+    if (err != ESP_OK) {
+        free(nodeId);
+        free(subdomain);
+        nvs_close(nvs_handle);
         return false;
     }
     
     // Load UUID
-    size_t uuidSize = preferences.getBytesLength(KEY_UUID);
-    if (uuidSize != RM_UUID_LENGTH) {
-        preferences.end();
+    required_size = RM_UUID_LENGTH;
+    err = nvs_get_blob(nvs_handle, KEY_UUID, ownAddress.uuid.bytes, &required_size);
+    if (err != ESP_OK || required_size != RM_UUID_LENGTH) {
+        free(nodeId);
+        free(subdomain);
+        nvs_close(nvs_handle);
         return false;
     }
     
-    preferences.getBytes(KEY_UUID, ownAddress.uuid.bytes, RM_UUID_LENGTH);
-    preferences.end();
+    nvs_close(nvs_handle);
     
     // Set address
-    ownAddress.nodeId = storedNodeId;
-    ownAddress.subdomain = storedSubdomain;
+    ownAddress.nodeId = String(nodeId);
+    ownAddress.subdomain = String(subdomain);
+    
+    free(nodeId);
+    free(subdomain);
     
     // Validate
     if (!validateStoredIdentity()) {
@@ -320,13 +356,28 @@ bool RealMeshNode::createNewIdentity() {
     }
     
     // Validate names
-    if (!isValidNodeId(desiredNodeId) || !isValidSubdomain(desiredSubdomain)) {
+    Serial.printf("[NODE] Validating nodeId='%s' (len=%d), subdomain='%s' (len=%d)\n", 
+                  desiredNodeId.c_str(), desiredNodeId.length(),
+                  desiredSubdomain.c_str(), desiredSubdomain.length());
+    
+    bool nodeIdValid = isValidNodeId(desiredNodeId);
+    bool subdomainValid = isValidSubdomain(desiredSubdomain);
+    
+    Serial.printf("[NODE] nodeIdValid=%s, subdomainValid=%s\n", 
+                  nodeIdValid ? "true" : "false", 
+                  subdomainValid ? "true" : "false");
+    
+    if (!nodeIdValid || !subdomainValid) {
         logEvent("ERROR", "Invalid node ID or subdomain");
         return false;
     }
     
     // Generate UUID
     ownAddress.uuid = generateUUID();
+    Serial.printf("[NODE] Generated UUID: %02x%02x%02x%02x-%02x%02x%02x%02x\n",
+                  ownAddress.uuid.bytes[0], ownAddress.uuid.bytes[1], ownAddress.uuid.bytes[2], ownAddress.uuid.bytes[3],
+                  ownAddress.uuid.bytes[4], ownAddress.uuid.bytes[5], ownAddress.uuid.bytes[6], ownAddress.uuid.bytes[7]);
+    
     ownAddress.nodeId = desiredNodeId;
     ownAddress.subdomain = desiredSubdomain;
     
@@ -341,20 +392,73 @@ bool RealMeshNode::createNewIdentity() {
 }
 
 bool RealMeshNode::storeIdentity() {
-    if (!preferences.begin(STORAGE_NAMESPACE, false)) {
+    Serial.println("[NODE] Attempting to store identity...");
+    
+    // Try to initialize NVS first
+    Serial.println("[NODE] Initializing NVS...");
+    esp_err_t err = nvs_flash_init();
+    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        Serial.println("[NODE] NVS partition was truncated, erasing...");
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        err = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(err);
+    Serial.printf("[NODE] NVS init result: %s\n", esp_err_to_name(err));
+    
+    // Use NVS directly instead of Preferences
+    nvs_handle_t nvs_handle;
+    err = nvs_open(STORAGE_NAMESPACE, NVS_READWRITE, &nvs_handle);
+    if (err != ESP_OK) {
+        Serial.printf("[NODE] ERROR: Failed to open NVS namespace '%s': %s\n", STORAGE_NAMESPACE, esp_err_to_name(err));
         return false;
     }
     
-    preferences.putString(KEY_NODE_ID, ownAddress.nodeId);
-    preferences.putString(KEY_SUBDOMAIN, ownAddress.subdomain);
-    preferences.putBytes(KEY_UUID, ownAddress.uuid.bytes, RM_UUID_LENGTH);
+    Serial.printf("[NODE] Storing nodeId: %s\n", ownAddress.nodeId.c_str());
+    Serial.printf("[NODE] Storing subdomain: %s\n", ownAddress.subdomain.c_str());
+    Serial.printf("[NODE] Storing UUID: %02x%02x%02x%02x...\n", 
+                  ownAddress.uuid.bytes[0], ownAddress.uuid.bytes[1], 
+                  ownAddress.uuid.bytes[2], ownAddress.uuid.bytes[3]);
     
-    // Mark first boot time if not set
-    if (!preferences.isKey(KEY_FIRST_BOOT)) {
-        preferences.putUInt(KEY_FIRST_BOOT, millis() / 1000);
+    // Store using direct NVS calls
+    err = nvs_set_str(nvs_handle, KEY_NODE_ID, ownAddress.nodeId.c_str());
+    if (err != ESP_OK) {
+        Serial.printf("[NODE] ERROR storing nodeId: %s\n", esp_err_to_name(err));
+        nvs_close(nvs_handle);
+        return false;
     }
     
-    preferences.end();
+    err = nvs_set_str(nvs_handle, KEY_SUBDOMAIN, ownAddress.subdomain.c_str());
+    if (err != ESP_OK) {
+        Serial.printf("[NODE] ERROR storing subdomain: %s\n", esp_err_to_name(err));
+        nvs_close(nvs_handle);
+        return false;
+    }
+    
+    err = nvs_set_blob(nvs_handle, KEY_UUID, ownAddress.uuid.bytes, RM_UUID_LENGTH);
+    if (err != ESP_OK) {
+        Serial.printf("[NODE] ERROR storing UUID: %s\n", esp_err_to_name(err));
+        nvs_close(nvs_handle);
+        return false;
+    }
+    
+    // Mark first boot time if not set
+    size_t required_size = 0;
+    err = nvs_get_blob(nvs_handle, KEY_FIRST_BOOT, NULL, &required_size);
+    if (err == ESP_ERR_NVS_NOT_FOUND) {
+        uint32_t first_boot = millis() / 1000;
+        nvs_set_u32(nvs_handle, KEY_FIRST_BOOT, first_boot);
+    }
+    
+    // Commit changes
+    err = nvs_commit(nvs_handle);
+    if (err != ESP_OK) {
+        Serial.printf("[NODE] ERROR committing NVS: %s\n", esp_err_to_name(err));
+        nvs_close(nvs_handle);
+        return false;
+    }
+    
+    nvs_close(nvs_handle);
+    Serial.println("[NODE] Identity stored successfully");
     return true;
 }
 
@@ -646,4 +750,25 @@ void RealMeshNode::handleNameConflictTimeout() {
         Serial.print("[NAME] New identity established: ");
         Serial.println(getOwnAddress().getFullAddress());
     }
+}
+
+// Network information methods
+size_t RealMeshNode::getKnownNodesCount() {
+    if (!router) {
+        return 0;
+    }
+    return router->getRoutingTableSize();
+}
+
+std::vector<String> RealMeshNode::getKnownNodes() {
+    std::vector<String> nodes;
+    if (!router) {
+        return nodes;
+    }
+    
+    // This would typically iterate through the routing table
+    // For now, return a simple placeholder until routing table access is implemented
+    nodes.push_back(getOwnAddress().getFullAddress());
+    
+    return nodes;
 }
