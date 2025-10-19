@@ -34,8 +34,23 @@ String inputBuffer = "";
 bool cliActive = false;
 
 // Temporary message display
-uint32_t tempMessageTimeout = 0;
+String tempMessage = "";
+String tempStatus = "";
+String tempInfo = "";
 bool tempMessageActive = false;
+unsigned long tempMessageTimeout = 0;
+
+// Display carousel
+enum DisplayScreen {
+  SCREEN_BLE_PAIRING = 0,
+  SCREEN_NETWORK_STATUS = 1,
+  SCREEN_MESSAGE_STATS = 2,
+  SCREEN_COUNT = 3
+};
+
+int currentDisplayScreen = SCREEN_BLE_PAIRING;
+unsigned long lastScreenChange = 0;
+const unsigned long SCREEN_DISPLAY_TIME = 15000; // 15 seconds per screen
 
 // ============================================================================
 // Function Declarations
@@ -47,11 +62,17 @@ void showHelp();
 void showStatus();
 void changeName(const String& args);
 void changeType(const String& args);
+void controlWiFi(const String& args);
+void controlBluetooth(const String& args);
 void sendMessage(const String& args);
 void scanNetwork();
 void rebootDevice();
 void showPrompt();
 void updateDisplay(const String& title, const String& status, const String& info);
+void updateCarouselDisplay();
+void showBLEPairingScreen();
+void showNetworkStatusScreen();
+void showMessageStatsScreen();
 void showTemporaryMessage(const String& title, const String& status, const String& info, uint32_t timeoutMs = 10000);
 void showError(const String& error);
 String formatUptime(uint32_t seconds);
@@ -105,13 +126,18 @@ void setup() {
   Serial.println("Initializing mobile API...");
   mobileAPI = new RealMeshAPI(meshNode);
   
-  // Start WiFi AP for API (Bluetooth may not be available on ESP32-S3)
-  if (mobileAPI->beginWiFi("RealMesh-" + String(ESP.getEfuseMac(), HEX), "realmesh123", 8080)) {
-    Serial.println("✅ WiFi API ready on port 8080");
-    Serial.println("   Connect to: RealMesh-" + String(ESP.getEfuseMac(), HEX));
-    Serial.println("   Password: realmesh123");
+  // Start BLE for mobile API by default
+  String deviceName = "RealMesh-" + String(ESP.getEfuseMac(), HEX).substring(8);
+  
+  if (mobileAPI->beginBLE(deviceName)) {
+    Serial.println("✅ BLE API ready");
+    Serial.printf("   Device: %s\n", deviceName.c_str());
+    
+    // Start with BLE pairing screen - no "tap to pair" since this isn't touchscreen
+    showBLEPairingScreen();
   } else {
-    Serial.println("❌ WiFi API failed");
+    Serial.println("❌ BLE API failed");
+    showError("BLE Failed");
   }
   
   Serial.println("=== RealMesh Node Ready ===");
@@ -123,7 +149,8 @@ void setup() {
   Serial.println("  reboot    - Restart device");
   Serial.println("");
   Serial.println("Mobile API:");
-  Serial.println("  WiFi AP: RealMesh-" + String(ESP.getEfuseMac(), HEX) + " (port 8080)");
+  Serial.printf("  BLE: %s (ready for pairing)\n", deviceName.c_str());
+  Serial.println("  WiFi: OFF (use 'wifi on' to enable)");
   Serial.println("");
   showPrompt();
   
@@ -150,33 +177,19 @@ void loop() {
     mobileAPI->loop();
   }
   
-  // Update display periodically (every 30 seconds)
-  static unsigned long lastDisplayUpdate = 0;
-  if (millis() - lastDisplayUpdate > 30000) {
-    // Only update if no temporary message is showing
-    if (!tempMessageActive) {
-      if (meshNode) {
-        // Get current network stats
-        auto stats = meshNode->getNetworkStats();
-        String nodeCount = String(meshNode->getKnownNodesCount());
-        String uptime = formatUptime(millis() / 1000);
-        
-        // Show network status on display
-        updateDisplay("RealMesh Node", 
-                     "Nodes: " + nodeCount + " | Up: " + uptime,
-                     "Sent: " + String(stats.messagesSent) + " | Rcv: " + String(stats.messagesReceived));
-      } else {
-        updateDisplay("RealMesh", "Running", "Uptime: " + formatUptime(millis() / 1000));
-      }
-    }
-    lastDisplayUpdate = millis();
+  // Update display periodically (carousel through different screens)
+  if (!tempMessageActive && (millis() - lastScreenChange > SCREEN_DISPLAY_TIME)) {
+    currentDisplayScreen = (currentDisplayScreen + 1) % SCREEN_COUNT;
+    updateCarouselDisplay();
+    lastScreenChange = millis();
   }
   
   // Check if temporary message timeout has expired
   if (tempMessageActive && millis() > tempMessageTimeout) {
     tempMessageActive = false;
-    // Force display update immediately
-    lastDisplayUpdate = 0;
+    // Reset carousel and show current screen
+    updateCarouselDisplay();
+    lastScreenChange = millis();
   }
   
   delay(10);
@@ -240,6 +253,10 @@ void processCommand(const String& command) {
     changeName(args);
   } else if (cmd == "type") {
     changeType(args);
+  } else if (cmd == "wifi") {
+    controlWiFi(args);
+  } else if (cmd == "ble") {
+    controlBluetooth(args);
   } else if (cmd == "send") {
     sendMessage(args);
   } else if (cmd == "scan") {
@@ -263,11 +280,21 @@ void showHelp() {
   Serial.println("  name <id> <domain> - Change node name and domain");
   Serial.println("  type <mobile|stationary> - Change node type");
   Serial.println("");
+  Serial.println("Connectivity:");
+  Serial.println("  wifi on           - Enable WiFi AP");
+  Serial.println("  wifi off          - Disable WiFi AP");
+  Serial.println("  ble on            - Enable BLE");
+  Serial.println("  ble off           - Disable BLE");
+  Serial.println("");
   Serial.println("Messaging:");
   Serial.println("  send <addr> <msg> - Send message to address");
   Serial.println("");
   Serial.println("Network:");
   Serial.println("  scan              - Scan for nearby nodes");
+  Serial.println("");
+  Serial.println("📱 Mobile Connection:");
+  Serial.println("   For BLE: Use a BLE scanner app like 'nRF Connect'");
+  Serial.println("   Regular Bluetooth settings won't show BLE devices!");
   Serial.println("");
 }
 
@@ -279,6 +306,18 @@ void showStatus() {
     Serial.println();
     meshNode->printNetworkInfo();
     Serial.println("Free Heap: " + String(ESP.getFreeHeap()) + " bytes");
+    
+    // Show mobile API status
+    if (mobileAPI) {
+      Serial.println();
+      Serial.println("=== Mobile API Status ===");
+      Serial.printf("BLE Enabled: %s\n", mobileAPI->isBLEEnabled() ? "YES" : "NO");
+      if (mobileAPI->isBLEEnabled()) {
+        Serial.printf("BLE Device Name: %s\n", mobileAPI->getBLEDeviceName().c_str());
+        Serial.println("BLE Status: Advertising and ready for connections");
+      }
+      Serial.printf("WiFi Enabled: %s\n", mobileAPI->isWiFiEnabled() ? "YES" : "NO");
+    }
   } else {
     Serial.println("ERROR: Node not initialized");
   }
@@ -414,6 +453,110 @@ void changeType(const String& args) {
   }
 }
 
+void controlWiFi(const String& args) {
+  if (args.isEmpty()) {
+    Serial.println("Usage: wifi <on|off>");
+    return;
+  }
+  
+  String action = args;
+  action.trim();
+  action.toLowerCase();
+  
+  if (!mobileAPI) {
+    Serial.println("ERROR: Mobile API not initialized");
+    return;
+  }
+  
+  if (action == "on") {
+    if (mobileAPI->isWiFiEnabled()) {
+      Serial.println("WiFi is already enabled");
+      return;
+    }
+    
+    String wifiSSID = "RealMesh-" + String(ESP.getEfuseMac(), HEX);
+    String wifiPassword = "realmesh123";
+    
+    if (mobileAPI->beginWiFi(wifiSSID, wifiPassword, 8080)) {
+      Serial.println("✅ WiFi AP enabled");
+      Serial.printf("   SSID: %s\n", wifiSSID.c_str());
+      Serial.printf("   Password: %s\n", wifiPassword.c_str());
+      Serial.println("   Port: 8080");
+      
+      showTemporaryMessage("WiFi Enabled", "SSID: " + wifiSSID, "Port: 8080", 5000);
+    } else {
+      Serial.println("❌ Failed to enable WiFi AP");
+      showError("WiFi Failed");
+    }
+  } else if (action == "off") {
+    if (!mobileAPI->isWiFiEnabled()) {
+      Serial.println("WiFi is already disabled");
+      return;
+    }
+    
+    mobileAPI->stopWiFi();
+    Serial.println("WiFi AP disabled");
+    showTemporaryMessage("WiFi Disabled", "", "AP stopped", 3000);
+  } else {
+    Serial.println("Error: Invalid action '" + action + "'");
+    Serial.println("Valid actions: on, off");
+  }
+}
+
+void controlBluetooth(const String& args) {
+  if (args.isEmpty()) {
+    Serial.println("Usage: ble <on|off>");
+    return;
+  }
+  
+  String action = args;
+  action.trim();
+  action.toLowerCase();
+  
+  if (!mobileAPI) {
+    Serial.println("ERROR: Mobile API not initialized");
+    return;
+  }
+  
+  if (action == "on") {
+    if (mobileAPI->isBLEEnabled()) {
+      Serial.println("BLE is already enabled");
+      return;
+    }
+    
+    String deviceName = "RealMesh-" + String(ESP.getEfuseMac(), HEX).substring(8);
+    
+    if (mobileAPI->beginBLE(deviceName)) {
+      Serial.println("✅ BLE enabled");
+      Serial.printf("   Device: %s\n", deviceName.c_str());
+      
+      showTemporaryMessage("BLE Enabled", "Device: " + deviceName, "Ready to pair", 5000);
+      
+      // Update main display
+      updateDisplay("RealMesh Ready", "BLE: " + deviceName, "Tap to pair");
+    } else {
+      Serial.println("❌ Failed to enable BLE");
+      showError("BLE Failed");
+    }
+  } else if (action == "off") {
+    if (!mobileAPI->isBLEEnabled()) {
+      Serial.println("BLE is already disabled");
+      return;
+    }
+    
+    mobileAPI->stopBLE();
+    Serial.println("BLE disabled");
+    showTemporaryMessage("BLE Disabled", "", "Disconnected", 3000);
+    
+    // Update main display
+    String nodeAddr = meshNode ? meshNode->getOwnAddress().getFullAddress() : "Unknown";
+    updateDisplay("RealMesh Node", nodeAddr, "BLE: OFF");
+  } else {
+    Serial.println("Error: Invalid action '" + action + "'");
+    Serial.println("Valid actions: on, off");
+  }
+}
+
 void rebootDevice() {
   Serial.println("Rebooting in 3 seconds...");
   updateDisplay("Rebooting...", "", "");
@@ -498,4 +641,69 @@ String formatUptime(uint32_t seconds) {
   return String(hours) + ":" + 
          (mins < 10 ? "0" : "") + String(mins) + ":" +
          (secs < 10 ? "0" : "") + String(secs);
+}
+
+// ============================================================================
+// Display Carousel Functions
+// ============================================================================
+
+void updateCarouselDisplay() {
+  switch (currentDisplayScreen) {
+    case SCREEN_BLE_PAIRING:
+      showBLEPairingScreen();
+      break;
+    case SCREEN_NETWORK_STATUS:
+      showNetworkStatusScreen();
+      break;
+    case SCREEN_MESSAGE_STATS:
+      showMessageStatsScreen();
+      break;
+    default:
+      currentDisplayScreen = SCREEN_BLE_PAIRING;
+      showBLEPairingScreen();
+      break;
+  }
+}
+
+void showBLEPairingScreen() {
+  if (!mobileAPI) {
+    updateDisplay("RealMesh", "Starting...", "");
+    return;
+  }
+  
+  String deviceName = mobileAPI->getBLEDeviceName();
+  if (deviceName.length() == 0) {
+    deviceName = "RealMesh-" + String(ESP.getEfuseMac(), HEX).substring(8);
+  }
+  
+  updateDisplay("Bluetooth Pairing", 
+               "Device: " + deviceName,
+               "Ready for mobile apps to connect");
+}
+
+void showNetworkStatusScreen() {
+  if (!meshNode) {
+    updateDisplay("RealMesh Network", "Initializing...", "");
+    return;
+  }
+  
+  String nodeCount = String(meshNode->getKnownNodesCount());
+  String uptime = formatUptime(millis() / 1000);
+  
+  updateDisplay("Network Status", 
+               "Nodes: " + nodeCount + " | Uptime: " + uptime,
+               "LoRa Mesh Network Active");
+}
+
+void showMessageStatsScreen() {
+  if (!meshNode) {
+    updateDisplay("Message Stats", "No data available", "");
+    return;
+  }
+  
+  auto stats = meshNode->getNetworkStats();
+  
+  updateDisplay("Message Statistics",
+               "Sent: " + String(stats.messagesSent) + " | Received: " + String(stats.messagesReceived),
+               "Forwarded: " + String(stats.messagesForwarded) + " | Dropped: " + String(stats.messagesDropped));
 }

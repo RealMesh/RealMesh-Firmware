@@ -1,9 +1,123 @@
 #include "RealMeshMobileAPI.h"
+#include <esp_gap_ble_api.h>
+#include <esp_gatts_api.h>
 
 RealMeshAPI::RealMeshAPI(RealMeshNode* node) : 
     meshNode(node), 
     tcpServer(nullptr), 
-    wifiEnabled(false) {
+    wifiEnabled(false),
+    bleServer(nullptr),
+    bleCharacteristic(nullptr),
+    bleEnabled(false) {
+}
+
+// BLE Service and Characteristic UUIDs
+#define SERVICE_UUID        "12345678-1234-1234-1234-123456789abc"
+#define CHARACTERISTIC_UUID "87654321-4321-4321-4321-cba987654321"
+
+class BLECallbacks: public BLEServerCallbacks {
+    void onConnect(BLEServer* pServer) {
+        Serial.println("BLE client connected");
+    }
+    
+    void onDisconnect(BLEServer* pServer) {
+        Serial.println("BLE client disconnected");
+        // Restart advertising
+        pServer->getAdvertising()->start();
+    }
+};
+
+class RealMeshBLECharacteristicCallbacks: public BLECharacteristicCallbacks {
+private:
+    RealMeshAPI* api;
+    
+public:
+    RealMeshBLECharacteristicCallbacks(RealMeshAPI* api) : api(api) {}
+    
+    void onWrite(BLECharacteristic *pCharacteristic) {
+        String command = pCharacteristic->getValue().c_str();
+        command.trim();
+        
+        if (command.length() > 0) {
+            Serial.printf("BLE command: %s\n", command.c_str());
+            String response = api->processJsonCommand(command);
+            pCharacteristic->setValue(response.c_str());
+            pCharacteristic->notify();
+        }
+    }
+};
+
+bool RealMeshAPI::beginBLE(const String& deviceName) {
+    Serial.println("Starting BLE for mobile API...");
+    
+    bleDeviceName = deviceName;
+    
+    // Initialize BLE
+    BLEDevice::init(deviceName.c_str());
+    
+    // Create BLE Server
+    bleServer = BLEDevice::createServer();
+    bleServer->setCallbacks(new BLECallbacks());
+    
+    // Create BLE Service
+    BLEService *pService = bleServer->createService(SERVICE_UUID);
+    
+    // Create BLE Characteristic
+    bleCharacteristic = pService->createCharacteristic(
+        CHARACTERISTIC_UUID,
+        BLECharacteristic::PROPERTY_READ |
+        BLECharacteristic::PROPERTY_WRITE |
+        BLECharacteristic::PROPERTY_NOTIFY
+    );
+    
+    bleCharacteristic->setCallbacks(new RealMeshBLECharacteristicCallbacks(this));
+    bleCharacteristic->addDescriptor(new BLE2902());
+    
+    // Start service
+    pService->start();
+    
+    // Start advertising
+    BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
+    pAdvertising->addServiceUUID(SERVICE_UUID);
+    pAdvertising->setScanResponse(true);
+    pAdvertising->setMinPreferred(0x06);
+    pAdvertising->setMaxPreferred(0x12);
+    
+    // Set device as connectable and discoverable
+    pAdvertising->setAppearance(0x0080); // Generic Computer
+    
+    // Start advertising with proper settings
+    BLEDevice::startAdvertising();
+    
+    Serial.printf("📡 BLE Advertising started\n");
+    Serial.printf("   Device Name: %s\n", deviceName.c_str());
+    Serial.printf("   Service UUID: %s\n", SERVICE_UUID);
+    Serial.printf("   Device should be visible as: %s\n", deviceName.c_str());
+    Serial.println("   Try scanning with a BLE scanner app like:");
+    Serial.println("   - nRF Connect (Nordic) - recommended");
+    Serial.println("   - BLE Scanner");
+    Serial.println("   - LightBlue Explorer");
+    
+    // Add a delay to ensure advertising starts properly
+    delay(100);
+    
+    bleEnabled = true;
+    
+    Serial.println("✅ BLE API ready");
+    Serial.printf("   Device Name: %s\n", deviceName.c_str());
+    Serial.println("   Ready for pairing!");
+    
+    return true;
+}
+
+void RealMeshAPI::stopBLE() {
+    if (bleEnabled) {
+        BLEDevice::deinit(false);
+        bleServer = nullptr;
+        bleCharacteristic = nullptr;
+        bleEnabled = false;
+        Serial.println("BLE API stopped");
+    }
 }
 
 bool RealMeshAPI::beginWiFi(const String& ssid, const String& password, uint16_t port) {
@@ -34,6 +148,7 @@ void RealMeshAPI::loop() {
     if (wifiEnabled) {
         handleTcpClient();
     }
+    // BLE handles callbacks automatically, no polling needed
 }
 
 void RealMeshAPI::handleTcpClient() {
@@ -60,6 +175,19 @@ void RealMeshAPI::handleTcpClient() {
         
         client.stop();
         Serial.println("TCP client disconnected");
+    }
+}
+
+void RealMeshAPI::stopWiFi() {
+    if (wifiEnabled) {
+        if (tcpServer) {
+            delete tcpServer;
+            tcpServer = nullptr;
+        }
+        WiFi.softAPdisconnect(true);
+        WiFi.mode(WIFI_OFF);
+        wifiEnabled = false;
+        Serial.println("WiFi API stopped");
     }
 }
 
