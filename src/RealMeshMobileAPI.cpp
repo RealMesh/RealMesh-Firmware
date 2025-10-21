@@ -211,6 +211,10 @@ String RealMeshAPI::processJsonCommand(const String& jsonStr) {
         return sendMessage(address, message);
     } else if (command == "stats") {
         return getNetworkStats();
+    } else if (command == "led") {
+        return controlLED(doc);
+    } else if (command == "display") {
+        return controlDisplay(doc);
     } else {
         return createResponse(false, "", "Unknown command: " + command);
     }
@@ -305,4 +309,115 @@ String RealMeshAPI::createResponse(bool success, const String& data, const Strin
     String result;
     serializeJson(doc, result);
     return result;
+}
+
+String RealMeshAPI::controlLED(const JsonDocument& doc) {
+    // Get reference to global LED manager
+    extern RealMeshLEDManager* ledManager;
+    
+    if (!ledManager) {
+        return createResponse(false, "", "LED manager not available");
+    }
+    
+    String action = doc["action"];
+    
+    if (action == "on") {
+        ledManager->setLED(true);
+        return createResponse(true, "{\"state\":\"on\"}");
+    } else if (action == "off") {
+        ledManager->setLED(false);
+        return createResponse(true, "{\"state\":\"off\"}");
+    } else if (action == "toggle") {
+        ledManager->toggleLED();
+        bool state = ledManager->getLEDState();
+        return createResponse(true, "{\"state\":\"" + String(state ? "on" : "off") + "\"}");
+    } else if (action == "heartbeat") {
+        bool enabled = doc["enabled"];
+        ledManager->setHeartbeatEnabled(enabled);
+        return createResponse(true, "{\"heartbeat\":" + String(enabled ? "true" : "false") + "}");
+    } else if (action == "interval") {
+        int interval = doc["interval"];
+        if (interval >= 100 && interval <= 10000) {
+            ledManager->setHeartbeatInterval(interval);
+            return createResponse(true, "{\"interval\":" + String(interval) + "}");
+        } else {
+            return createResponse(false, "", "Invalid interval (100-10000ms)");
+        }
+    } else if (action == "status") {
+        DynamicJsonDocument statusDoc(256);
+        statusDoc["state"] = ledManager->getLEDState() ? "on" : "off";
+        statusDoc["heartbeat"] = ledManager->isHeartbeatEnabled();
+        statusDoc["interval"] = ledManager->getHeartbeatInterval();
+        
+        String statusStr;
+        serializeJson(statusDoc, statusStr);
+        return createResponse(true, statusStr);
+    } else if (action == "flash") {
+        String pattern = doc["pattern"];
+        if (pattern == "success") {
+            ledManager->flashSuccess(2);
+        } else if (pattern == "error") {
+            ledManager->flashError(3);
+        } else if (pattern == "warning") {
+            ledManager->flashWarning(4);
+        } else {
+            return createResponse(false, "", "Invalid flash pattern");
+        }
+        return createResponse(true, "{\"flash\":\"" + pattern + "\"}");
+    } else {
+        return createResponse(false, "", "Invalid LED action");
+    }
+}
+
+String RealMeshAPI::controlDisplay(const JsonDocument& doc) {
+    // Get reference to global display manager
+    extern RealMeshDisplayManager* displayManager;
+    
+    if (!displayManager) {
+        return createResponse(false, "", "Display manager not available");
+    }
+    
+    String action = doc["action"];
+    
+    if (action == "next") {
+        displayManager->nextScreen();
+        return createResponse(true, "{\"screen\":" + String(displayManager->getCurrentScreen()) + "}");
+    } else if (action == "prev") {
+        displayManager->previousScreen();
+        return createResponse(true, "{\"screen\":" + String(displayManager->getCurrentScreen()) + "}");
+    } else if (action == "set") {
+        int screen = doc["screen"];
+        if (screen >= 0 && screen < 4) {
+            displayManager->setCurrentScreen((DisplayScreen)screen);
+            return createResponse(true, "{\"screen\":" + String(screen) + "}");
+        } else {
+            return createResponse(false, "", "Invalid screen number (0-3)");
+        }
+    } else if (action == "message") {
+        String title = doc["title"];
+        String message = doc["message"];
+        String type = doc["type"];
+        int duration = doc["duration"];
+        
+        if (duration <= 0) duration = 5000;
+        
+        DisplayMessageType msgType = DISPLAY_MSG_INFO;
+        if (type == "error") msgType = DISPLAY_MSG_ERROR;
+        else if (type == "warning") msgType = DISPLAY_MSG_WARNING;
+        else if (type == "success") msgType = DISPLAY_MSG_SUCCESS;
+        
+        displayManager->showTemporaryMessage(title, message, msgType, duration);
+        return createResponse(true, "{\"message\":\"shown\"}");
+    } else if (action == "status") {
+        DynamicJsonDocument statusDoc(256);
+        statusDoc["currentScreen"] = displayManager->getCurrentScreen();
+        statusDoc["batteryPercent"] = displayManager->getBatteryPercentage();
+        statusDoc["unreadMessages"] = displayManager->getUnreadCount();
+        
+        String statusStr;
+        serializeJson(statusDoc, statusStr);
+        return createResponse(true, statusStr);
+    } else {
+        return createResponse(false, "", "Invalid display action");
+    }
 }

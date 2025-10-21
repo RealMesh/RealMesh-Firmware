@@ -9,6 +9,7 @@
 #include <BLEUtils.h>
 #include <BLE2902.h>
 #include "RealMeshNode.h"
+#include "RealMeshDisplay.h"
 
 // Forward declaration for friend class
 class RealMeshBLECharacteristicCallbacks;
@@ -35,11 +36,13 @@ public:
     String getBLEDeviceName() const { return bleDeviceName; }
     
     // JSON API methods
-    String processCommand(const String& command);
+    String processJsonCommand(const String& jsonStr);
     String getStatus();
     String getNodes();
     String sendMessage(const String& address, const String& message);
     String getNetworkStats();
+    String controlLED(const JsonDocument& doc);
+    String controlDisplay(const JsonDocument& doc);
     
 private:
     RealMeshNode* meshNode;
@@ -58,5 +61,4 @@ private:
     String createResponse(bool success, const String& data = "", const String& error = "");
     void handleTcpClient();
     void handleBLEClient();
-    String processJsonCommand(const String& jsonStr);
 };

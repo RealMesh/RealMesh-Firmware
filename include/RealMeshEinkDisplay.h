@@ -1,18 +1,9 @@
 #pragma once
 
-#include <Arduino.h>
-#include <SPI.h>
-#include <GxEPD2_Display.h>
-#include <GxEPD2_BW.h>
-#include <GxEPD2_213_FC1.h>
-#include <Fonts/FreeMono9pt7b.h>
-#include <Fonts/FreeMonoBold12pt7b.h>
+// Legacy compatibility header - redirects to new RealMeshDisplay system
+#include "RealMeshDisplay.h"
 
-// Global display variables
-extern SPIClass* hspi;
-extern GxEPD2_Display* display;
-
-// Display functions
-bool initializeEinkDisplay();
-void showStartupScreen();
-void clearDisplay();
+// Legacy function redirects
+#define initializeEinkDisplay() initializeDisplay()
+#define showStartupScreen() displayManager ? displayManager->showTemporaryMessage("RealMesh", "Starting...", MSG_INFO, 3000) : false
+#define clearDisplay() displayManager ? displayManager->refresh() : void()

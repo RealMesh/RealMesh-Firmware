@@ -5,24 +5,10 @@
 #include <Fonts/FreeMonoBold9pt7b.h>
 #include "RealMeshTypes.h"
 #include "RealMeshNode.h"
-#include "RealMeshEinkDisplay.h"
+#include "RealMeshDisplay.h"
 #include "RealMeshMobileAPI.h"
 
-// ============================================================================
-// Display Configuration (Heltec Wireless Paper - Meshtastic pins)
-// ============================================================================
-
-// Using Meshtastic pin configuration for Heltec Wireless Paper
-#define EINK_CS     4  
-#define EINK_DC     5
-#define EINK_RES    6  // Meshtastic uses pin 6 for RST
-#define EINK_BUSY   7  // Meshtastic uses pin 7 for BUSY
-#define EINK_SCLK   3
-#define EINK_MOSI   2
-
-// External display variables (defined in RealMeshEinkDisplay.cpp)
-extern SPIClass* hspi;
-extern GxEPD2_Display* display;
+// Display is managed through displayManager
 
 // ============================================================================
 // Global Variables
@@ -33,24 +19,10 @@ RealMeshAPI* mobileAPI;
 String inputBuffer = "";
 bool cliActive = false;
 
-// Temporary message display
-String tempMessage = "";
-String tempStatus = "";
-String tempInfo = "";
-bool tempMessageActive = false;
-unsigned long tempMessageTimeout = 0;
-
-// Display carousel
-enum DisplayScreen {
-  SCREEN_BLE_PAIRING = 0,
-  SCREEN_NETWORK_STATUS = 1,
-  SCREEN_MESSAGE_STATS = 2,
-  SCREEN_COUNT = 3
-};
-
-int currentDisplayScreen = SCREEN_BLE_PAIRING;
-unsigned long lastScreenChange = 0;
-const unsigned long SCREEN_DISPLAY_TIME = 15000; // 15 seconds per screen
+// Enhanced managers (declared in RealMeshDisplay.cpp)
+extern RealMeshDisplayManager* displayManager;
+extern RealMeshLEDManager* ledManager;  
+extern RealMeshButtonManager* buttonManager;
 
 // ============================================================================
 // Function Declarations
@@ -64,17 +36,12 @@ void changeName(const String& args);
 void changeType(const String& args);
 void controlWiFi(const String& args);
 void controlBluetooth(const String& args);
+void controlLED(const String& args);
+void controlScreen(const String& args);
 void sendMessage(const String& args);
 void scanNetwork();
 void rebootDevice();
 void showPrompt();
-void updateDisplay(const String& title, const String& status, const String& info);
-void updateCarouselDisplay();
-void showBLEPairingScreen();
-void showNetworkStatusScreen();
-void showMessageStatsScreen();
-void showTemporaryMessage(const String& title, const String& status, const String& info, uint32_t timeoutMs = 10000);
-void showError(const String& error);
 String formatUptime(uint32_t seconds);
 
 // ============================================================================
@@ -87,13 +54,38 @@ void setup() {
   
   Serial.println("=== RealMesh Node Starting ===");
   
-  // Initialize eInk display
-  if (!initializeEinkDisplay()) {
-    Serial.println("ERROR: Failed to initialize display");
+  // Initialize enhanced hardware managers
+  displayManager = new RealMeshDisplayManager();
+  ledManager = new RealMeshLEDManager();
+  buttonManager = new RealMeshButtonManager();
+  
+  // Initialize display system
+  if (!displayManager->begin()) {
+    Serial.println("ERROR: Failed to initialize display manager");
     return;
   }
   
-  showStartupScreen();
+  // Initialize LED system
+  ledManager->begin();
+  ledManager->setHeartbeatEnabled(true);
+  ledManager->flashSuccess(2); // Startup success indication
+  
+  // Initialize button system with callbacks
+  buttonManager->begin();
+  buttonManager->setUSRPressCallback([]() {
+    Serial.println("USR button pressed - next screen");
+    if (displayManager) {
+      displayManager->nextScreen();
+    }
+  });
+  
+  buttonManager->setUSRLongPressCallback([]() {
+    Serial.println("USR button long press - toggle LED heartbeat");
+    if (ledManager) {
+      ledManager->setHeartbeatEnabled(!ledManager->isHeartbeatEnabled());
+      Serial.println("LED heartbeat: " + String(ledManager->isHeartbeatEnabled() ? "ON" : "OFF"));
+    }
+  });
   
   // Initialize mesh node
   Serial.println("Initializing mesh node...");
@@ -101,26 +93,50 @@ void setup() {
   meshNode = new RealMeshNode();
   if (!meshNode->begin("node1", "local")) {
     Serial.println("ERROR: Failed to initialize mesh node");
-    showError("Node Init Failed");
+    if (displayManager) {
+      displayManager->showTemporaryMessage("Error", "Node Init Failed", DISPLAY_MSG_ERROR, 10000);
+    }
+    if (ledManager) {
+      ledManager->flashError(5);
+    }
     return;
   }
   
   // Set up mesh event callbacks
   meshNode->setOnMessageReceived([](const String& from, const String& message) {
     Serial.println("📨 Message from " + from + ": " + message);
-    showTemporaryMessage("Message Received", "From: " + from, message.substring(0, 20), 15000);
+    
+    // Add message to display manager and show notification
+    if (displayManager) {
+      displayManager->addMessage(from, message, true);
+    }
+    
+    // Flash LED for new message
+    if (ledManager) {
+      ledManager->flashSuccess(2);
+    }
   });
   
   meshNode->setOnNetworkEvent([](const String& event, const String& details) {
     Serial.println("🌐 Network: " + event + " - " + details);
+    
+    // Update display with network information
+    if (displayManager && meshNode) {
+      String uptime = formatUptime(millis() / 1000);
+      displayManager->setNetworkInfo(meshNode->getKnownNodesCount(), uptime);
+    }
   });
   
   meshNode->setOnStateChanged([](RealMeshNode::NodeState oldState, RealMeshNode::NodeState newState) {
     Serial.println("🔄 State changed from " + String(oldState) + " to " + String(newState));
+    
+    // Update node info on display
+    if (displayManager && meshNode) {
+      displayManager->setNodeName(meshNode->getOwnAddress().nodeId);
+      displayManager->setNodeAddress(meshNode->getOwnAddress().getFullAddress());
+      displayManager->setNodeType(meshNode->isStationary() ? "Stationary" : "Mobile");
+    }
   });
-  
-  // Update display with ready status
-  updateDisplay("RealMesh Ready", "CLI Active", "Type 'help' for commands");
   
   // Initialize mobile API
   Serial.println("Initializing mobile API...");
@@ -133,11 +149,23 @@ void setup() {
     Serial.println("✅ BLE API ready");
     Serial.printf("   Device: %s\n", deviceName.c_str());
     
-    // Start with BLE pairing screen - no "tap to pair" since this isn't touchscreen
-    showBLEPairingScreen();
+    // Update display with BLE info
+    if (displayManager) {
+      displayManager->setBluetoothInfo(deviceName, false);
+      displayManager->showTemporaryMessage("BLE Ready", "Device: " + deviceName, DISPLAY_MSG_SUCCESS, 3000);
+    }
+    
+    if (ledManager) {
+      ledManager->flashSuccess(1);
+    }
   } else {
     Serial.println("❌ BLE API failed");
-    showError("BLE Failed");
+    if (displayManager) {
+      displayManager->showTemporaryMessage("Error", "BLE Failed", DISPLAY_MSG_ERROR, 5000);
+    }
+    if (ledManager) {
+      ledManager->flashError(3);
+    }
   }
   
   Serial.println("=== RealMesh Node Ready ===");
@@ -162,6 +190,20 @@ void setup() {
 // ============================================================================
 
 void loop() {
+  // Process hardware managers
+  if (ledManager) {
+    ledManager->loop();
+  }
+  
+  if (buttonManager) {
+    buttonManager->loop();
+  }
+  
+  // Update battery level periodically
+  if (displayManager) {
+    displayManager->updateBatteryLevel();
+  }
+  
   // Process CLI input
   if (cliActive) {
     processCLI();
@@ -177,19 +219,9 @@ void loop() {
     mobileAPI->loop();
   }
   
-  // Update display periodically (carousel through different screens)
-  if (!tempMessageActive && (millis() - lastScreenChange > SCREEN_DISPLAY_TIME)) {
-    currentDisplayScreen = (currentDisplayScreen + 1) % SCREEN_COUNT;
-    updateCarouselDisplay();
-    lastScreenChange = millis();
-  }
-  
-  // Check if temporary message timeout has expired
-  if (tempMessageActive && millis() > tempMessageTimeout) {
-    tempMessageActive = false;
-    // Reset carousel and show current screen
-    updateCarouselDisplay();
-    lastScreenChange = millis();
+  // Refresh display if needed
+  if (displayManager) {
+    displayManager->refresh();
   }
   
   delay(10);
@@ -257,6 +289,10 @@ void processCommand(const String& command) {
     controlWiFi(args);
   } else if (cmd == "ble") {
     controlBluetooth(args);
+  } else if (cmd == "led") {
+    controlLED(args);
+  } else if (cmd == "screen") {
+    controlScreen(args);
   } else if (cmd == "send") {
     sendMessage(args);
   } else if (cmd == "scan") {
@@ -279,6 +315,13 @@ void showHelp() {
   Serial.println("Configuration:");
   Serial.println("  name <id> <domain> - Change node name and domain");
   Serial.println("  type <mobile|stationary> - Change node type");
+  Serial.println("");
+  Serial.println("Hardware:");
+  Serial.println("  led on|off|toggle - Control LED state");
+  Serial.println("  led heartbeat on|off - Enable/disable heartbeat");
+  Serial.println("  led interval <ms> - Set heartbeat interval");
+  Serial.println("  screen next|prev  - Change display screen");
+  Serial.println("  screen <0-3>      - Go to specific screen");
   Serial.println("");
   Serial.println("Connectivity:");
   Serial.println("  wifi on           - Enable WiFi AP");
@@ -337,10 +380,20 @@ void sendMessage(const String& args) {
     bool success = meshNode->sendMessage(address, message);
     if (success) {
       Serial.println("Message sent to " + address);
-      showTemporaryMessage("Message Sent", "To: " + address, message.substring(0, 20), 5000);
+      if (displayManager) {
+        displayManager->showTemporaryMessage("Message Sent", "To: " + address, DISPLAY_MSG_SUCCESS, 5000);
+      }
+      if (ledManager) {
+        ledManager->flashSuccess(1);
+      }
     } else {
       Serial.println("Failed to send message");
-      showTemporaryMessage("Send Failed", "To: " + address, "Message not delivered", 5000);
+      if (displayManager) {
+        displayManager->showTemporaryMessage("Send Failed", "To: " + address, DISPLAY_MSG_ERROR, 5000);
+      }
+      if (ledManager) {
+        ledManager->flashError(2);
+      }
     }
   } else {
     Serial.println("ERROR: Node not initialized");
@@ -403,7 +456,9 @@ void changeName(const String& args) {
     Serial.println("Name change initiated. Reboot required to apply changes.");
     Serial.println("Use 'reboot' command to restart with new identity.");
     
-    showTemporaryMessage("Name Changed", "New: " + nodeId + "@" + domain, "Reboot to apply", 5000);
+    if (displayManager) {
+      displayManager->showTemporaryMessage("Name Changed", "New: " + nodeId + "@" + domain, DISPLAY_MSG_INFO, 5000);
+    }
   } else {
     Serial.println("ERROR: Node not initialized");
   }
@@ -432,7 +487,9 @@ void changeType(const String& args) {
       }
       meshNode->setStationary(false);
       Serial.println("Changed node type from stationary to mobile");
-      showTemporaryMessage("Type Changed", "Now: Mobile", "Moves frequently", 3000);
+      if (displayManager) {
+        displayManager->showTemporaryMessage("Type Changed", "Now: Mobile", DISPLAY_MSG_INFO, 3000);
+      }
     } else if (type == "stationary") {
       if (currentStationary) {
         Serial.println("Node is already stationary");
@@ -440,7 +497,9 @@ void changeType(const String& args) {
       }
       meshNode->setStationary(true);
       Serial.println("Changed node type from mobile to stationary");
-      showTemporaryMessage("Type Changed", "Now: Stationary", "Fixed location", 3000);
+      if (displayManager) {
+        displayManager->showTemporaryMessage("Type Changed", "Now: Stationary", DISPLAY_MSG_INFO, 3000);
+      }
     } else {
       Serial.println("Error: Invalid type '" + type + "'");
       Serial.println("Valid types: mobile, stationary");
@@ -483,10 +542,15 @@ void controlWiFi(const String& args) {
       Serial.printf("   Password: %s\n", wifiPassword.c_str());
       Serial.println("   Port: 8080");
       
-      showTemporaryMessage("WiFi Enabled", "SSID: " + wifiSSID, "Port: 8080", 5000);
+      if (displayManager) {
+        displayManager->setWiFiInfo(wifiSSID, "192.168.4.1");
+        displayManager->showTemporaryMessage("WiFi Enabled", "SSID: " + wifiSSID, DISPLAY_MSG_SUCCESS, 5000);
+      }
     } else {
       Serial.println("❌ Failed to enable WiFi AP");
-      showError("WiFi Failed");
+      if (displayManager) {
+        displayManager->showTemporaryMessage("Error", "WiFi Failed", DISPLAY_MSG_ERROR, 5000);
+      }
     }
   } else if (action == "off") {
     if (!mobileAPI->isWiFiEnabled()) {
@@ -496,7 +560,10 @@ void controlWiFi(const String& args) {
     
     mobileAPI->stopWiFi();
     Serial.println("WiFi AP disabled");
-    showTemporaryMessage("WiFi Disabled", "", "AP stopped", 3000);
+    if (displayManager) {
+      displayManager->setWiFiInfo("", "");
+      displayManager->showTemporaryMessage("WiFi Disabled", "AP stopped", DISPLAY_MSG_INFO, 3000);
+    }
   } else {
     Serial.println("Error: Invalid action '" + action + "'");
     Serial.println("Valid actions: on, off");
@@ -530,13 +597,15 @@ void controlBluetooth(const String& args) {
       Serial.println("✅ BLE enabled");
       Serial.printf("   Device: %s\n", deviceName.c_str());
       
-      showTemporaryMessage("BLE Enabled", "Device: " + deviceName, "Ready to pair", 5000);
-      
-      // Update main display
-      updateDisplay("RealMesh Ready", "BLE: " + deviceName, "Tap to pair");
+      if (displayManager) {
+        displayManager->setBluetoothInfo(deviceName, false);
+        displayManager->showTemporaryMessage("BLE Enabled", "Device: " + deviceName, DISPLAY_MSG_SUCCESS, 5000);
+      }
     } else {
       Serial.println("❌ Failed to enable BLE");
-      showError("BLE Failed");
+      if (displayManager) {
+        displayManager->showTemporaryMessage("Error", "BLE Failed", DISPLAY_MSG_ERROR, 5000);
+      }
     }
   } else if (action == "off") {
     if (!mobileAPI->isBLEEnabled()) {
@@ -546,87 +615,140 @@ void controlBluetooth(const String& args) {
     
     mobileAPI->stopBLE();
     Serial.println("BLE disabled");
-    showTemporaryMessage("BLE Disabled", "", "Disconnected", 3000);
-    
-    // Update main display
-    String nodeAddr = meshNode ? meshNode->getOwnAddress().getFullAddress() : "Unknown";
-    updateDisplay("RealMesh Node", nodeAddr, "BLE: OFF");
+    if (displayManager) {
+      displayManager->setBluetoothInfo("", false);
+      displayManager->showTemporaryMessage("BLE Disabled", "Disconnected", DISPLAY_MSG_INFO, 3000);
+    }
   } else {
     Serial.println("Error: Invalid action '" + action + "'");
     Serial.println("Valid actions: on, off");
   }
 }
 
+void controlLED(const String& args) {
+  if (args.isEmpty()) {
+    Serial.println("Usage: led <on|off|toggle|heartbeat|interval>");
+    Serial.println("  on                - Turn LED on");
+    Serial.println("  off               - Turn LED off");
+    Serial.println("  toggle            - Toggle LED state");
+    Serial.println("  heartbeat on|off  - Control heartbeat");
+    Serial.println("  interval <ms>     - Set heartbeat interval");
+    return;
+  }
+  
+  if (!ledManager) {
+    Serial.println("ERROR: LED manager not initialized");
+    return;
+  }
+  
+  String arg1, arg2;
+  int spaceIndex = args.indexOf(' ');
+  if (spaceIndex > 0) {
+    arg1 = args.substring(0, spaceIndex);
+    arg2 = args.substring(spaceIndex + 1);
+    arg2.trim();
+  } else {
+    arg1 = args;
+  }
+  arg1.trim();
+  arg1.toLowerCase();
+  
+  if (arg1 == "on") {
+    ledManager->setLED(true);
+    Serial.println("LED turned on");
+  } else if (arg1 == "off") {
+    ledManager->setLED(false);
+    Serial.println("LED turned off");
+  } else if (arg1 == "toggle") {
+    ledManager->toggleLED();
+    Serial.println("LED toggled to " + String(ledManager->getLEDState() ? "ON" : "OFF"));
+  } else if (arg1 == "heartbeat") {
+    if (arg2.isEmpty()) {
+      Serial.println("Current heartbeat: " + String(ledManager->isHeartbeatEnabled() ? "ON" : "OFF"));
+      Serial.println("Interval: " + String(ledManager->getHeartbeatInterval()) + "ms");
+      return;
+    }
+    
+    arg2.toLowerCase();
+    if (arg2 == "on") {
+      ledManager->setHeartbeatEnabled(true);
+      Serial.println("LED heartbeat enabled");
+    } else if (arg2 == "off") {
+      ledManager->setHeartbeatEnabled(false);
+      Serial.println("LED heartbeat disabled");
+    } else {
+      Serial.println("Invalid heartbeat option. Use 'on' or 'off'");
+    }
+  } else if (arg1 == "interval") {
+    if (arg2.isEmpty()) {
+      Serial.println("Current interval: " + String(ledManager->getHeartbeatInterval()) + "ms");
+      return;
+    }
+    
+    int interval = arg2.toInt();
+    if (interval >= 100 && interval <= 10000) {
+      ledManager->setHeartbeatInterval(interval);
+      Serial.println("Heartbeat interval set to " + String(interval) + "ms");
+    } else {
+      Serial.println("Invalid interval. Use 100-10000ms");
+    }
+  } else {
+    Serial.println("Invalid LED command. Use 'help' for available options");
+  }
+}
+
+void controlScreen(const String& args) {
+  if (args.isEmpty()) {
+    Serial.println("Usage: screen <next|prev|0|1|2|3>");
+    Serial.println("  next    - Go to next screen");
+    Serial.println("  prev    - Go to previous screen");
+    Serial.println("  0       - Messages screen");
+    Serial.println("  1       - New message screen");  
+    Serial.println("  2       - Node info screen");
+    Serial.println("  3       - Bluetooth info screen");
+    return;
+  }
+  
+  if (!displayManager) {
+    Serial.println("ERROR: Display manager not initialized");
+    return;
+  }
+  
+  String action = args;
+  action.trim();
+  action.toLowerCase();
+  
+  if (action == "next") {
+    displayManager->nextScreen();
+    Serial.println("Switched to next screen");
+  } else if (action == "prev") {
+    displayManager->previousScreen();
+    Serial.println("Switched to previous screen");
+  } else if (action.length() == 1 && action[0] >= '0' && action[0] <= '3') {
+    int screenNum = action[0] - '0';
+    displayManager->setCurrentScreen((DisplayScreen)screenNum);
+    
+    String screenNames[] = {"Messages", "New Message", "Node Info", "Bluetooth Info"};
+    Serial.println("Switched to " + screenNames[screenNum] + " screen");
+  } else {
+    Serial.println("Invalid screen command. Use 'help' for available options");
+  }
+}
+
 void rebootDevice() {
   Serial.println("Rebooting in 3 seconds...");
-  updateDisplay("Rebooting...", "", "");
+  if (displayManager) {
+    displayManager->showTemporaryMessage("Rebooting", "Please wait...", DISPLAY_MSG_INFO, 3000);
+  }
+  if (ledManager) {
+    ledManager->flashWarning(5);
+  }
   delay(3000);
   ESP.restart();
 }
 
 void showPrompt() {
   Serial.print("realmesh> ");
-}
-
-// ============================================================================
-// Display Helper Functions
-// ============================================================================
-
-void updateDisplay(const String& title, const String& status, const String& info) {
-  if (!display) {
-    Serial.println("Display not available");
-    return;
-  }
-  
-  display->setFullWindow();
-  display->firstPage();
-  do {
-    display->fillScreen(GxEPD_WHITE);
-    
-    // Set basic text color
-    display->setTextColor(GxEPD_BLACK);
-    
-    // Title
-    display->setCursor(10, 25);
-    display->println(title);
-    
-    // Status
-    if (status.length() > 0) {
-      display->setCursor(10, 50);
-      display->println(status);
-    }
-    
-    // Info
-    if (info.length() > 0) {
-      display->setCursor(10, 75);
-      display->println(info);
-    }
-    
-  } while (display->nextPage());
-}
-
-void showError(const String& error) {
-  if (!display) {
-    Serial.println("Display not available for error: " + error);
-    return;
-  }
-  
-  display->setFullWindow();
-  display->firstPage();
-  do {
-    display->fillScreen(GxEPD_WHITE);
-    display->setTextColor(GxEPD_BLACK);
-    display->setCursor(10, 30);
-    display->println("ERROR:");
-    display->setCursor(10, 60);
-    display->println(error);
-  } while (display->nextPage());
-}
-
-void showTemporaryMessage(const String& title, const String& status, const String& info, uint32_t timeoutMs) {
-  updateDisplay(title, status, info);
-  tempMessageTimeout = millis() + timeoutMs;
-  tempMessageActive = true;
 }
 
 // ============================================================================
@@ -641,69 +763,4 @@ String formatUptime(uint32_t seconds) {
   return String(hours) + ":" + 
          (mins < 10 ? "0" : "") + String(mins) + ":" +
          (secs < 10 ? "0" : "") + String(secs);
-}
-
-// ============================================================================
-// Display Carousel Functions
-// ============================================================================
-
-void updateCarouselDisplay() {
-  switch (currentDisplayScreen) {
-    case SCREEN_BLE_PAIRING:
-      showBLEPairingScreen();
-      break;
-    case SCREEN_NETWORK_STATUS:
-      showNetworkStatusScreen();
-      break;
-    case SCREEN_MESSAGE_STATS:
-      showMessageStatsScreen();
-      break;
-    default:
-      currentDisplayScreen = SCREEN_BLE_PAIRING;
-      showBLEPairingScreen();
-      break;
-  }
-}
-
-void showBLEPairingScreen() {
-  if (!mobileAPI) {
-    updateDisplay("RealMesh", "Starting...", "");
-    return;
-  }
-  
-  String deviceName = mobileAPI->getBLEDeviceName();
-  if (deviceName.length() == 0) {
-    deviceName = "RealMesh-" + String(ESP.getEfuseMac(), HEX).substring(8);
-  }
-  
-  updateDisplay("Bluetooth Pairing", 
-               "Device: " + deviceName,
-               "Ready for mobile apps to connect");
-}
-
-void showNetworkStatusScreen() {
-  if (!meshNode) {
-    updateDisplay("RealMesh Network", "Initializing...", "");
-    return;
-  }
-  
-  String nodeCount = String(meshNode->getKnownNodesCount());
-  String uptime = formatUptime(millis() / 1000);
-  
-  updateDisplay("Network Status", 
-               "Nodes: " + nodeCount + " | Uptime: " + uptime,
-               "LoRa Mesh Network Active");
-}
-
-void showMessageStatsScreen() {
-  if (!meshNode) {
-    updateDisplay("Message Stats", "No data available", "");
-    return;
-  }
-  
-  auto stats = meshNode->getNetworkStats();
-  
-  updateDisplay("Message Statistics",
-               "Sent: " + String(stats.messagesSent) + " | Received: " + String(stats.messagesReceived),
-               "Forwarded: " + String(stats.messagesForwarded) + " | Dropped: " + String(stats.messagesDropped));
 }
