@@ -91,6 +91,7 @@ void setup() {
   Serial.println("Initializing mesh node...");
   
   meshNode = new RealMeshNode();
+  
   if (!meshNode->begin("node1", "local")) {
     Serial.println("ERROR: Failed to initialize mesh node");
     if (displayManager) {
@@ -190,6 +191,8 @@ void setup() {
 // ============================================================================
 
 void loop() {
+  // Remove debug heartbeat - was interrupting CLI
+  
   // Process hardware managers
   if (ledManager) {
     ledManager->loop();
@@ -207,6 +210,12 @@ void loop() {
   // Process CLI input
   if (cliActive) {
     processCLI();
+  } else if (Serial.available()) {
+    // If CLI not active due to setup failure, activate it manually
+    Serial.println("\n=== RealMesh CLI Activated ===");
+    showPrompt();
+    cliActive = true;
+    processCLI();
   }
   
   // Process mesh node operations
@@ -219,9 +228,14 @@ void loop() {
     mobileAPI->loop();
   }
   
-  // Refresh display if needed
+  // Refresh display only when actually needed
   if (displayManager) {
-    displayManager->refresh();
+    // Only refresh if there's new content or every 5 minutes for battery update
+    static uint32_t lastDisplayCheck = 0;
+    if (millis() - lastDisplayCheck > 5000) { // Check every 5 seconds instead of every 10ms
+      displayManager->refresh();
+      lastDisplayCheck = millis();
+    }
   }
   
   delay(10);
@@ -234,10 +248,6 @@ void loop() {
 void processCLI() {
   while (Serial.available()) {
     char c = Serial.read();
-    
-    if (c >= 32 && c <= 126) {
-      Serial.write(c);
-    }
     
     if (c == '\r' || c == '\n') {
       if (inputBuffer.length() > 0) {
@@ -257,6 +267,7 @@ void processCLI() {
         Serial.write('\b');
       }
     } else if (c >= 32 && c <= 126) { // Printable characters
+      Serial.write(c); // Echo character
       inputBuffer += c;
     }
   }

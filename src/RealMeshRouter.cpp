@@ -128,7 +128,10 @@ bool RealMeshRouter::sendEmergencyMessage(const String& message) {
 }
 
 bool RealMeshRouter::sendHeartbeat() {
-    if (millis() - lastHeartbeat < (ownStatus == NODE_STATIONARY ? RM_HEARTBEAT_STATIONARY : RM_HEARTBEAT_MOBILE)) {
+    // Allow heartbeats every 3 seconds during initial discovery, then use normal intervals
+    uint32_t minInterval = (millis() < 60000) ? 3000 : (ownStatus == NODE_STATIONARY ? RM_HEARTBEAT_STATIONARY : RM_HEARTBEAT_MOBILE);
+    
+    if (millis() - lastHeartbeat < minInterval) {
         return true; // Too soon for another heartbeat
     }
     

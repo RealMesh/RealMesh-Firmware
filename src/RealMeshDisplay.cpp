@@ -1,5 +1,8 @@
 #include "RealMeshDisplay.h"
 #include "RealMeshConfig.h"
+#include <Fonts/FreeMonoBold9pt7b.h>
+#include <Fonts/FreeMonoBold12pt7b.h>
+#include <Fonts/FreeMono9pt7b.h>
 
 // ============================================================================
 // Global Display Variables
@@ -31,23 +34,76 @@ RealMeshDisplayManager::RealMeshDisplayManager()
 }
 
 bool RealMeshDisplayManager::begin() {
-    Serial.println("Initializing enhanced display manager...");
+    Serial.println("[DISPLAY] Initializing display manager...");
     
-    // Initialize display using the correct GxEPD2 constructor
+    // Initialize VEXT power control (critical for Heltec Wireless Paper)
+    Serial.println("[DISPLAY] Initializing VEXT power...");
+    pinMode(PIN_VEXT_ENABLE, OUTPUT);
+    digitalWrite(PIN_VEXT_ENABLE, LOW);  // Enable display power (active low)
+    delay(200);  // Longer delay for power stabilization
+    
+    // Initialize SPI explicitly
+    Serial.println("[DISPLAY] Initializing SPI...");
+    SPI.begin(EINK_SCLK, -1, EINK_MOSI, EINK_CS); // SCLK, MISO, MOSI, CS
+    delay(100);
+    
+    Serial.println("[DISPLAY] Creating GxEPD2 display...");
+    
+    // Initialize display using simple constructor
     display = new GxEPD2_BW<GxEPD2_213_FC1, GxEPD2_213_FC1::HEIGHT>(
         GxEPD2_213_FC1(EINK_CS, EINK_DC, EINK_RES, EINK_BUSY, SPI)
     );
     
-    display->init(115200);
-    display->setRotation(0);
+    Serial.println("[DISPLAY] Calling display->init()...");
+    display->init(115200, true, 2, false); // Enable diagnostic output
+    delay(100);
+    
+    Serial.println("[DISPLAY] Setting rotation and text wrap...");
+    display->setRotation(3);  // Fix 90-degree clockwise rotation
     display->setTextWrap(false);
     
+    Serial.println("[DISPLAY] Testing display with immediate content...");
+    
+    // Test with immediate simple display - try multiple approaches
+    Serial.println("[DISPLAY] Showing RealMesh welcome screen...");
+    
+    // Show cool RealMesh welcome screen
+    display->setFullWindow();
+    display->firstPage();
+    do {
+        display->fillScreen(GxEPD_WHITE);
+        display->setTextColor(GxEPD_BLACK);
+        
+        // Title
+        display->setTextSize(2);
+        display->setCursor(35, 25);
+        display->print("RealMesh");
+        
+        // Subtitle  
+        display->setTextSize(1);
+        display->setCursor(60, 45);
+        display->print("Network");
+        
+        // Version/Status
+        display->setCursor(45, 65);
+        display->print("v1.0 Ready");
+        
+        // Bottom line
+        display->setCursor(20, 85);
+        display->print("Mesh Networking");
+        
+        // Simple border
+        display->drawRect(5, 5, 240, 118, GxEPD_BLACK);
+        
+    } while (display->nextPage());
+    
+    delay(3000);  // Show welcome screen for 3 seconds
+    
+    Serial.println("[DISPLAY] Welcome screen completed, starting carousel...");
+    
     displayInitialized = true;
-    
-    // Show initial screen
-    showTemporaryMessage("RealMesh", "Starting up...", DISPLAY_MSG_INFO, 3000);
-    
-    Serial.println("Display manager initialized");
+    needsUpdate = true;  // Trigger immediate update to show carousel
+    Serial.println("[DISPLAY] Display manager initialized successfully");
     return true;
 }
 
@@ -82,7 +138,12 @@ void RealMeshDisplayManager::setCurrentScreen(DisplayScreen screen) {
 }
 
 void RealMeshDisplayManager::updateContent() {
-    if (!displayInitialized || !display) return;
+    if (!displayInitialized || !display) {
+        Serial.println("[DISPLAY] Update skipped - not initialized");
+        return;
+    }
+    
+    Serial.println("[DISPLAY] Starting display update...");
     
     display->setFullWindow();
     display->firstPage();
@@ -90,38 +151,44 @@ void RealMeshDisplayManager::updateContent() {
     do {
         display->fillScreen(GxEPD_WHITE);
         display->setTextColor(GxEPD_BLACK);
+        display->setTextSize(1);
         
-        // Draw header with node name and battery
-        drawHeader();
+        // Simple content display without complex fonts
+        display->setCursor(5, 15);
+        display->print("RealMesh Node");
         
-        // Draw main content based on current screen
+        display->setCursor(5, 30);
+        display->print("Name: ");
+        display->print(nodeName.length() > 0 ? nodeName : "Unknown");
+        
+        display->setCursor(5, 45);
+        display->print("Nodes: ");
+        display->print(knownNodes);
+        
+        display->setCursor(5, 60);
+        display->print("Battery: ");
+        display->print(batteryPercentage);
+        display->print("%");
+        
+        // Show temporary message if active
         if (tempMessageActive && millis() < tempMessageTimeout) {
-            // Show temporary message
-            display->setFont(&FreeMonoBold12pt7b);
-            drawCenteredText(tempTitle, 40);
-            
-            display->setFont(&FreeMono9pt7b);
-            drawCenteredText(tempMessage, 65);
-            
-            // Show message type indicator
-            String typeStr = (tempType == DISPLAY_MSG_ERROR) ? "ERROR" : 
-                           (tempType == DISPLAY_MSG_WARNING) ? "WARN" : 
-                           (tempType == DISPLAY_MSG_SUCCESS) ? "OK" : "INFO";
-            drawCenteredText(typeStr, 85);
-        } else {
-            // Clear temporary message if expired
-            if (tempMessageActive && millis() >= tempMessageTimeout) {
-                tempMessageActive = false;
-            }
-            
-            drawContent();
+            display->setCursor(5, 80);
+            display->print(">> ");
+            display->print(tempTitle);
+            display->setCursor(5, 95);
+            display->print(tempMessage);
+        } else if (tempMessageActive && millis() >= tempMessageTimeout) {
+            tempMessageActive = false;
         }
         
-        // Draw footer with screen indicators
-        drawFooter();
+        display->setCursor(5, 110);
+        display->print("Uptime: ");
+        display->print(millis() / 1000);
+        display->print("s");
         
     } while (display->nextPage());
     
+    Serial.println("[DISPLAY] Display update completed");
     lastUpdate = millis();
     needsUpdate = false;
 }
@@ -133,6 +200,9 @@ void RealMeshDisplayManager::showTemporaryMessage(const String& title, const Str
     tempMessageActive = true;
     tempMessageTimeout = millis() + durationMs;
     
+    // Force immediate update by resetting lastUpdate
+    lastUpdate = 0;
+    needsUpdate = true;
     updateContent();
 }
 
@@ -214,13 +284,15 @@ void RealMeshDisplayManager::updateBatteryLevel() {
 }
 
 void RealMeshDisplayManager::refresh() {
-    // Only update if needed and enough time has passed (throttling for e-ink)
+    // Smart refresh logic - only update when there's actually new content
     uint32_t now = millis();
-    if ((autoRefreshEnabled || needsUpdate) && (now - lastUpdate > DISPLAY_UPDATE_INTERVAL)) {
+    
+    // Only refresh if explicitly needed, or for battery updates every 5 minutes
+    if (needsUpdate || (autoRefreshEnabled && (now - lastUpdate > 300000))) { // 5 minutes instead of 10 seconds
+        Serial.println("[DISPLAY] Refreshing display (new content or battery update)...");
         updateContent();
-        lastUpdate = now;
-        needsUpdate = false;
     }
+    // No unnecessary refreshes - save power and reduce noise
 }
 
 void RealMeshDisplayManager::drawHeader() {
@@ -268,6 +340,7 @@ void RealMeshDisplayManager::drawScreenIndicators() {
 }
 
 void RealMeshDisplayManager::drawContent() {
+    Serial.printf("[DISPLAY] Drawing content for screen %d\n", currentScreen);
     switch (currentScreen) {
         case SCREEN_MESSAGES:
             drawMessagesScreen();

@@ -548,8 +548,8 @@ void RealMeshNode::broadcastPresence() {
 }
 
 void RealMeshNode::handleDiscoveryTimeout() {
-    // Broadcast presence every 10 seconds during discovery
-    if (millis() - lastDiscoveryBroadcast > 10000) {
+    // Broadcast presence every 3 seconds during discovery (more aggressive)
+    if (millis() - lastDiscoveryBroadcast > 3000) {
         broadcastPresence();
     }
     

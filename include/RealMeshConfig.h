@@ -17,7 +17,7 @@
 // Pin Configuration - Board Specific
 #ifdef HELTEC_WIRELESS_PAPER
     // Heltec Wireless Paper Pin Configuration (ESP32-S3 + SX1262)
-    // Tested and verified working pin configuration
+    // ✅ MESHTASTIC PROVEN CONFIGURATION - used by thousands of devices
     #define RM_LORA_SCK                9
     #define RM_LORA_MISO               11  
     #define RM_LORA_MOSI               10
@@ -83,8 +83,8 @@
 #define RM_ACK_TIMEOUT_FLOOD       30000    // 30 seconds
 #define RM_RETRY_INTERVAL_BASE     5000     // 5 seconds
 #define RM_RETRY_INTERVAL_MAX      45000    // 45 seconds
-#define RM_HEARTBEAT_STATIONARY    300000   // 5 minutes
-#define RM_HEARTBEAT_MOBILE        900000   // 15 minutes
+#define RM_HEARTBEAT_STATIONARY    15000    // 15 seconds (was 5 minutes - too slow!)
+#define RM_HEARTBEAT_MOBILE        30000    // 30 seconds (was 15 minutes - too slow!)
 #define RM_MESSAGE_MAX_AGE         600000   // 10 minutes
 #define RM_NAME_CONFLICT_TIMEOUT   259200000 // 72 hours
 #define RM_NETWORK_JOIN_TIMEOUT    30000    // 30 seconds

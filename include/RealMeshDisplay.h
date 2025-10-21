@@ -21,6 +21,9 @@
 #define EINK_SCLK   3
 #define EINK_MOSI   2
 
+// Power control pin
+#define PIN_VEXT_ENABLE  45  // Power enable pin (active LOW)
+
 // Hardware control pins
 #define LED_PIN         18    // Built-in LED on most Heltec devices
 #define USR_BUTTON_PIN  0     // USR button (GPIO0) - standard on Heltec devices
@@ -93,14 +96,18 @@ public:
     uint8_t getUnreadCount() const { return unreadMessageCount; }
     
     // Node information
-    void setNodeName(const String& name) { nodeName = name; }
-    void setNodeAddress(const String& address) { nodeAddress = address; }
-    void setNodeType(const String& type) { nodeType = type; }
-    void setNetworkInfo(uint8_t nodeCount, const String& uptime) { knownNodes = nodeCount; networkUptime = uptime; }
+    void setNodeName(const String& name) { nodeName = name; needsUpdate = true; }
+    void setNodeAddress(const String& address) { nodeAddress = address; needsUpdate = true; }
+    void setNodeType(const String& type) { nodeType = type; needsUpdate = true; }
+    void setNetworkInfo(uint8_t nodeCount, const String& uptime) { 
+        knownNodes = nodeCount; 
+        networkUptime = uptime; 
+        needsUpdate = true;  // Trigger display update when network info changes
+    }
     
     // Bluetooth information
-    void setBluetoothInfo(const String& deviceName, bool isConnected) { bleDeviceName = deviceName; bleConnected = isConnected; }
-    void setWiFiInfo(const String& ssid, const String& ip) { wifiSSID = ssid; wifiIP = ip; }
+    void setBluetoothInfo(const String& deviceName, bool isConnected) { bleDeviceName = deviceName; bleConnected = isConnected; needsUpdate = true; }
+    void setWiFiInfo(const String& ssid, const String& ip) { wifiSSID = ssid; wifiIP = ip; needsUpdate = true; }
     
     // Battery information
     void updateBatteryLevel();
