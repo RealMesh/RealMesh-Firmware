@@ -41,10 +41,9 @@
 
 // Screen definitions
 enum DisplayScreen {
-    SCREEN_MESSAGES = 0,
-    SCREEN_NEW_MESSAGE,
+    SCREEN_HOME = 0,
+    SCREEN_MESSAGES,
     SCREEN_NODE_INFO,
-    SCREEN_BLUETOOTH_INFO,
     SCREEN_COUNT
 };
 
@@ -174,6 +173,7 @@ private:
     void drawContent();
     
     // Screen-specific drawing
+    void drawHomeScreen();
     void drawMessagesScreen();
     void drawNewMessageScreen();
     void drawNodeInfoScreen();

@@ -22,10 +22,23 @@ RealMeshButtonManager* buttonManager = nullptr;
 
 RealMeshDisplayManager::RealMeshDisplayManager() 
     : display(nullptr), displayInitialized(false),
-      currentScreen(SCREEN_MESSAGES), needsUpdate(true), autoRefreshEnabled(false), lastUpdate(0),
+      currentScreen(SCREEN_HOME), needsUpdate(true), autoRefreshEnabled(false), lastUpdate(0),
       tempMessageActive(false), tempMessageTimeout(0),
       messageCount(0), unreadMessageCount(0), currentMessageIndex(0),
       batteryPercentage(100), batteryVoltage(3.7), lastBatteryUpdate(0) {
+    
+    // Initialize node information with realistic defaults
+    nodeName = "";
+    nodeAddress = "";  
+    nodeType = "";
+    knownNodes = 0;  // Start with 0 nodes found
+    networkUptime = "0:00:00";
+    
+    // Initialize connectivity information
+    bleDeviceName = "";
+    bleConnected = false;
+    wifiSSID = "";
+    wifiIP = "";
     
     // Initialize message array
     for (uint8_t i = 0; i < MAX_STORED_MESSAGES; i++) {
@@ -77,7 +90,7 @@ bool RealMeshDisplayManager::begin() {
         // Title
         display->setTextSize(2);
         display->setCursor(35, 25);
-        display->print("RealMesh");
+        display->print("RealMesh! Change node name.");
         
         // Subtitle  
         display->setTextSize(1);
@@ -99,10 +112,12 @@ bool RealMeshDisplayManager::begin() {
     
     delay(3000);  // Show welcome screen for 3 seconds
     
-    Serial.println("[DISPLAY] Welcome screen completed, starting carousel...");
+    Serial.println("[DISPLAY] Welcome screen completed, switching to home screen...");
     
     displayInitialized = true;
-    needsUpdate = true;  // Trigger immediate update to show carousel
+    currentScreen = SCREEN_HOME;  // Explicitly set to home screen
+    needsUpdate = true;  // Trigger immediate update to show home screen
+    updateContent();  // Force immediate update to home screen
     Serial.println("[DISPLAY] Display manager initialized successfully");
     return true;
 }
@@ -143,7 +158,7 @@ void RealMeshDisplayManager::updateContent() {
         return;
     }
     
-    Serial.println("[DISPLAY] Starting display update...");
+    Serial.printf("[DISPLAY] Starting display update for screen %d...\n", currentScreen);
     
     display->setFullWindow();
     display->firstPage();
@@ -151,40 +166,15 @@ void RealMeshDisplayManager::updateContent() {
     do {
         display->fillScreen(GxEPD_WHITE);
         display->setTextColor(GxEPD_BLACK);
-        display->setTextSize(1);
         
-        // Simple content display without complex fonts
-        display->setCursor(5, 15);
-        display->print("RealMesh Node");
+        // Draw header with battery and node name
+        drawHeader();
         
-        display->setCursor(5, 30);
-        display->print("Name: ");
-        display->print(nodeName.length() > 0 ? nodeName : "Unknown");
+        // Draw main content based on current screen
+        drawContent();
         
-        display->setCursor(5, 45);
-        display->print("Nodes: ");
-        display->print(knownNodes);
-        
-        display->setCursor(5, 60);
-        display->print("Battery: ");
-        display->print(batteryPercentage);
-        display->print("%");
-        
-        // Show temporary message if active
-        if (tempMessageActive && millis() < tempMessageTimeout) {
-            display->setCursor(5, 80);
-            display->print(">> ");
-            display->print(tempTitle);
-            display->setCursor(5, 95);
-            display->print(tempMessage);
-        } else if (tempMessageActive && millis() >= tempMessageTimeout) {
-            tempMessageActive = false;
-        }
-        
-        display->setCursor(5, 110);
-        display->print("Uptime: ");
-        display->print(millis() / 1000);
-        display->print("s");
+        // Draw footer with screen indicators
+        drawFooter();
         
     } while (display->nextPage());
     
@@ -216,9 +206,13 @@ void RealMeshDisplayManager::clearTemporaryMessage() {
 void RealMeshDisplayManager::addMessage(const String& from, const String& content, bool isNew) {
     addMessageInternal(from, content, isNew);
     
-    if (isNew && currentScreen != SCREEN_NEW_MESSAGE) {
-        // Show new message notification
-        showTemporaryMessage("New Message", "From: " + from, DISPLAY_MSG_INFO, 5000);
+    if (isNew) {
+        // Switch to home screen to show new message notification immediately
+        currentScreen = SCREEN_HOME;
+        needsUpdate = true;
+        
+        // Also show temporary detailed message
+        showTemporaryMessage("New Message", "From: " + from + "\n" + content.substring(0, 30) + (content.length() > 30 ? "..." : ""), DISPLAY_MSG_INFO, 8000);
     }
     
     needsUpdate = true;
@@ -296,16 +290,15 @@ void RealMeshDisplayManager::refresh() {
 }
 
 void RealMeshDisplayManager::drawHeader() {
-    display->setFont(&FreeMonoBold9pt7b);
+    display->setTextSize(1);
     
     // Node name (left side)
-    display->setCursor(MARGIN, 15);
+    display->setCursor(MARGIN, 10);
     display->print(nodeName.length() > 0 ? nodeName : "RealMesh");
     
     // Battery percentage (right side)  
     String batteryText = String(batteryPercentage) + "%";
-    uint16_t batteryWidth = getTextWidth(batteryText);
-    display->setCursor(SCREEN_WIDTH - batteryWidth - MARGIN, 15);
+    display->setCursor(SCREEN_WIDTH - 40, 10);  // Simple right positioning
     display->print(batteryText);
     
     // Draw line under header
@@ -342,18 +335,50 @@ void RealMeshDisplayManager::drawScreenIndicators() {
 void RealMeshDisplayManager::drawContent() {
     Serial.printf("[DISPLAY] Drawing content for screen %d\n", currentScreen);
     switch (currentScreen) {
+        case SCREEN_HOME:
+            drawHomeScreen();
+            break;
         case SCREEN_MESSAGES:
             drawMessagesScreen();
-            break;
-        case SCREEN_NEW_MESSAGE:
-            drawNewMessageScreen();
             break;
         case SCREEN_NODE_INFO:
             drawNodeInfoScreen();
             break;
-        case SCREEN_BLUETOOTH_INFO:
-            drawBluetoothInfoScreen();
-            break;
+    }
+}
+
+void RealMeshDisplayManager::drawHomeScreen() {
+    int contentY = HEADER_HEIGHT + 10;
+    
+    // RealMesh title - use basic text size
+    display->setTextSize(2);
+    display->setCursor(70, contentY + 15);
+    display->print("RealMesh");
+    
+    // Node count in the center
+    display->setTextSize(1);
+    int nodeCountY = contentY + 40;
+    
+    // Show network status
+    if (knownNodes == 0) {
+        display->setCursor(50, nodeCountY);
+        display->print("Searching...");
+    } else if (knownNodes == 1) {
+        display->setCursor(45, nodeCountY);
+        display->print("1 Node Found");
+    } else {
+        display->setCursor(30, nodeCountY);
+        display->print(String(knownNodes) + " Nodes Found");
+    }
+    
+    // Message indicator if there are unread messages
+    if (unreadMessageCount > 0) {
+        display->setCursor(20, contentY + 60);
+        display->print(String(unreadMessageCount) + " new message");
+        if (unreadMessageCount != 1) display->print("s");
+        
+        // Notification icon
+        display->fillCircle(15, contentY + 55, 3, GxEPD_BLACK);
     }
 }
 

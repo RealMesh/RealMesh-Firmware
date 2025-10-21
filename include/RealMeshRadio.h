@@ -58,8 +58,6 @@ public:
     void startChannelScan(uint32_t duration = 5000);
     
     // Debug and testing
-    void scanSPI();
-    void testSPIConfiguration(uint8_t sck, uint8_t miso, uint8_t mosi, uint8_t cs);
     void printRadioConfig();
     void runRadioTest();
     

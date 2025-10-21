@@ -33,93 +33,7 @@ RealMeshRadio::RealMeshRadio() :
     instance = this;
 }
 
-void RealMeshRadio::scanSPI() {
-    Serial.println("[RADIO] === SPI Bus Scanner ===");
-    Serial.printf("[RADIO] Current config - SCK:%d MISO:%d MOSI:%d CS:%d RST:%d DIO1:%d BUSY:%d\n", 
-                  RM_LORA_SCK, RM_LORA_MISO, RM_LORA_MOSI, RM_LORA_CS, RM_LORA_RST, RM_LORA_DIO1, RM_LORA_BUSY);
-    
-    // Test current configuration
-    Serial.println("[RADIO] Testing current pin configuration...");
-    testSPIConfiguration(RM_LORA_SCK, RM_LORA_MISO, RM_LORA_MOSI, RM_LORA_CS);
-    
-    // Alternative configurations to test (in case of board variant differences)
-    Serial.println("[RADIO] Testing alternative configurations...");
-    
-    // Heltec V4 configuration (from search results)
-    Serial.println("[RADIO] Testing Heltec V4 config (SCK:9 MISO:11 MOSI:10 CS:8)");
-    testSPIConfiguration(9, 11, 10, 8);
-    
-    // Some other ESP32-S3 boards use different pins
-    Serial.println("[RADIO] Testing alternative config (SCK:18 MISO:19 MOSI:23 CS:5)");
-    testSPIConfiguration(18, 19, 23, 5);
-    
-    Serial.println("[RADIO] === SPI Scanner Complete ===");
-}
 
-void RealMeshRadio::testSPIConfiguration(uint8_t sck, uint8_t miso, uint8_t mosi, uint8_t cs) {
-    Serial.printf("[RADIO] Testing SCK:%d MISO:%d MOSI:%d CS:%d\n", sck, miso, mosi, cs);
-    
-    // Initialize SPI with test pins
-    SPI.end(); // End current SPI first
-    SPI.begin(sck, miso, mosi, cs);
-    
-    // Set CS pin as output and high (inactive)
-    pinMode(cs, OUTPUT);
-    digitalWrite(cs, HIGH);
-    delay(10);
-    
-    // Try to read version register
-    digitalWrite(cs, LOW);
-    delayMicroseconds(10);
-    
-    SPI.beginTransaction(SPISettings(2000000, MSBFIRST, SPI_MODE0));
-    uint8_t cmd = 0x1D; // Read register command for SX126x
-    uint8_t addr = 0x00; // Version register address
-    uint8_t nop = 0x00;
-    
-    SPI.transfer(cmd);
-    SPI.transfer(addr);
-    SPI.transfer(nop); // Status byte
-    uint8_t version = SPI.transfer(0x00); // Read version
-    
-    SPI.endTransaction();
-    digitalWrite(cs, HIGH);
-    
-    Serial.printf("[RADIO]   Version register: 0x%02X", version);
-    
-    // Check if this looks like a valid SX126x response
-    if (version == 0x00 || version == 0xFF) {
-        Serial.println(" (Invalid - chip not responding)");
-    } else if (version == 0x22 || version == 0x24) {
-        Serial.println(" (Valid SX126x chip detected!)");
-    } else {
-        Serial.printf(" (Unknown chip - might be valid: 0x%02X)\n", version);
-    }
-    
-    // Test consistency
-    bool consistent = true;
-    for (int i = 0; i < 3; i++) {
-        digitalWrite(cs, LOW);
-        delayMicroseconds(10);
-        
-        SPI.beginTransaction(SPISettings(2000000, MSBFIRST, SPI_MODE0));
-        SPI.transfer(0x1D);
-        SPI.transfer(0x00);
-        SPI.transfer(0x00);
-        uint8_t val = SPI.transfer(0x00);
-        SPI.endTransaction();
-        
-        digitalWrite(cs, HIGH);
-        if (val != version) consistent = false;
-        delay(5);
-    }
-    
-    Serial.printf("[RADIO]   Consistency check: %s\n", consistent ? "PASS" : "FAIL");
-    
-    // Restore original SPI configuration
-    SPI.end();
-    SPI.begin(RM_LORA_SCK, RM_LORA_MISO, RM_LORA_MOSI, RM_LORA_CS);
-}
 
 bool RealMeshRadio::begin() {
     Serial.println("[RADIO] Initializing SX1262 with EXACT Meshtastic sequence...");
@@ -129,28 +43,35 @@ bool RealMeshRadio::begin() {
     // Initialize SPI pins
     SPI.begin(RM_LORA_SCK, RM_LORA_MISO, RM_LORA_MOSI, RM_LORA_CS);
     
-    // Enable RadioLib verbose debugging
-    Serial.println("[RADIO] Enabling RadioLib verbose debugging...");
-    
-    // First, scan SPI bus to see if chip responds
-    scanSPI();
-    
-    // Test pin functionality
-    Serial.println("[RADIO] Testing pin functionality...");
+    // Configure pins (essential for radio initialization)
     pinMode(RM_LORA_RST, OUTPUT);
     pinMode(RM_LORA_CS, OUTPUT);
     pinMode(RM_LORA_BUSY, INPUT);
     
-    // Test reset pin
+    // Essential: Set CS pin high (inactive) before reset
+    digitalWrite(RM_LORA_CS, HIGH);
+    delay(10);
+    
+    // Critical: Re-initialize SPI (this was essential in the working scanner!)
+    SPI.end();
+    SPI.begin(RM_LORA_SCK, RM_LORA_MISO, RM_LORA_MOSI, RM_LORA_CS);
+    
+    // Reset the radio
     digitalWrite(RM_LORA_RST, LOW);
     delay(10);
     digitalWrite(RM_LORA_RST, HIGH);
     delay(100);
-    Serial.printf("[RADIO] Reset pin test completed\n");
     
-    // Test BUSY pin
-    int busyState = digitalRead(RM_LORA_BUSY);
-    Serial.printf("[RADIO] BUSY pin state: %d\n", busyState);
+    // Essential: Test SPI communication (this was working in the successful version)
+    digitalWrite(RM_LORA_CS, LOW);
+    delayMicroseconds(10);
+    SPI.beginTransaction(SPISettings(2000000, MSBFIRST, SPI_MODE0));
+    SPI.transfer(0x1D); // Read register command
+    SPI.transfer(0x00); // Version register address
+    SPI.transfer(0x00); // Status byte
+    (void)SPI.transfer(0x00); // Read version (essential for SPI initialization)
+    SPI.endTransaction();
+    digitalWrite(RM_LORA_CS, HIGH);
     
     // =================================================================
     // EXACT COPY of Meshtastic SX126xInterface<T>::init() method

@@ -191,8 +191,6 @@ void setup() {
 // ============================================================================
 
 void loop() {
-  // Remove debug heartbeat - was interrupting CLI
-  
   // Process hardware managers
   if (ledManager) {
     ledManager->loop();
@@ -710,13 +708,12 @@ void controlLED(const String& args) {
 
 void controlScreen(const String& args) {
   if (args.isEmpty()) {
-    Serial.println("Usage: screen <next|prev|0|1|2|3>");
+    Serial.println("Usage: screen <next|prev|0|1|2>");
     Serial.println("  next    - Go to next screen");
     Serial.println("  prev    - Go to previous screen");
-    Serial.println("  0       - Messages screen");
-    Serial.println("  1       - New message screen");  
+    Serial.println("  0       - Home screen");
+    Serial.println("  1       - Messages screen");
     Serial.println("  2       - Node info screen");
-    Serial.println("  3       - Bluetooth info screen");
     return;
   }
   
@@ -735,11 +732,11 @@ void controlScreen(const String& args) {
   } else if (action == "prev") {
     displayManager->previousScreen();
     Serial.println("Switched to previous screen");
-  } else if (action.length() == 1 && action[0] >= '0' && action[0] <= '3') {
+  } else if (action.length() == 1 && action[0] >= '0' && action[0] <= '2') {
     int screenNum = action[0] - '0';
     displayManager->setCurrentScreen((DisplayScreen)screenNum);
     
-    String screenNames[] = {"Messages", "New Message", "Node Info", "Bluetooth Info"};
+    String screenNames[] = {"Home", "Messages", "Node Info"};
     Serial.println("Switched to " + screenNames[screenNum] + " screen");
   } else {
     Serial.println("Invalid screen command. Use 'help' for available options");
