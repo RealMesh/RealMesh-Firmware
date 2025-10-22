@@ -1,3 +1,8 @@
+This is fork just for side development and testing. Not for public use. 
+For full working code, go to https://github.com/RealMesh/RealMesh-Firmware
+
+
+
 # RealMesh Firmware - ESP32 Implementation
 
 ESP32-S3 firmware for RealMesh mesh networking nodes with LoRa radio and e-ink display.
