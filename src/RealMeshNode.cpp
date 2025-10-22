@@ -225,6 +225,13 @@ bool RealMeshNode::sendMessage(const String& targetAddress, const String& messag
         return false;
     }
     
+    // Check if this is a broadcast to public channel
+    // "svet" = Serbian for "world/everyone" - broadcasts to public channel
+    if (targetAddress == "svet" || targetAddress == "@") {
+        logEvent("INFO", "Broadcasting to public channel (svet)");
+        return router->sendPublicMessage(message);
+    }
+    
     NodeAddress target = parseAddress(targetAddress);
     if (!target.isValid()) {
         logEvent("ERROR", "Invalid target address: " + targetAddress);
@@ -363,12 +370,45 @@ bool RealMeshNode::loadStoredIdentity() {
     
     nvs_close(nvs_handle);
     
-    // Set address
+    // Set address from stored values
     ownAddress.nodeId = String(nodeId);
     ownAddress.subdomain = String(subdomain);
     
     free(nodeId);
     free(subdomain);
+    
+    // Check if there's a pending name change (desired names set)
+    if (!desiredNodeId.isEmpty() || !desiredSubdomain.isEmpty()) {
+        Serial.println("[NODE] Pending name change detected, applying new identity...");
+        Serial.printf("[NODE] Desired: %s@%s\n", desiredNodeId.c_str(), desiredSubdomain.c_str());
+        Serial.printf("[NODE] Current: %s@%s\n", ownAddress.nodeId.c_str(), ownAddress.subdomain.c_str());
+        
+        // Apply desired names
+        if (!desiredNodeId.isEmpty()) {
+            ownAddress.nodeId = desiredNodeId;
+            Serial.printf("[NODE] Updated nodeId to: %s\n", ownAddress.nodeId.c_str());
+        }
+        if (!desiredSubdomain.isEmpty()) {
+            ownAddress.subdomain = desiredSubdomain;
+            Serial.printf("[NODE] Updated subdomain to: %s\n", ownAddress.subdomain.c_str());
+        }
+        
+        Serial.printf("[NODE] Final address before store: %s\n", ownAddress.getFullAddress().c_str());
+        
+        // Save the new identity permanently
+        if (storeIdentity()) {
+            Serial.printf("[NODE] Identity updated to: %s\n", ownAddress.getFullAddress().c_str());
+            
+            // Clear desired names from storage (they've been applied)
+            nvs_handle_t nvs_write;
+            if (nvs_open(STORAGE_NAMESPACE, NVS_READWRITE, &nvs_write) == ESP_OK) {
+                nvs_erase_key(nvs_write, "desired_node");
+                nvs_erase_key(nvs_write, "desired_sub");
+                nvs_commit(nvs_write);
+                nvs_close(nvs_write);
+            }
+        }
+    }
     
     // Validate
     if (!validateStoredIdentity()) {

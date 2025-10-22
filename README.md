@@ -7,8 +7,22 @@ This directory contains the ESP32/Arduino implementation of RealMesh for Heltec 
 ## Quick Start
 
 1. Install PlatformIO
-2. Open this project in VS Code with PlatformIO extension
-3. Build and upload to Heltec V3 device
+2. Activate Python virtual environment (if using):
+   ```bash
+   source .venv/bin/activate
+   ```
+3. Build and upload to device:
+   ```bash
+   pio run -e heltec_wireless_paper --target upload
+   ```
+4. Monitor serial output:
+   ```bash
+   pio device monitor
+   ```
+   Or combine upload and monitor:
+   ```bash
+   pio run -e heltec_wireless_paper --target upload && pio device monitor
+   ```
 
 ## Project Structure
 

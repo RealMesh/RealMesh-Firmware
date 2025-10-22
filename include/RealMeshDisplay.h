@@ -4,6 +4,7 @@
 #include <SPI.h>
 #include <GxEPD2_BW.h>
 #include <epd/GxEPD2_213_FC1.h>
+#include <Adafruit_GFX.h>
 #include <Fonts/FreeMono9pt7b.h>
 #include <Fonts/FreeMonoBold12pt7b.h>
 #include <Fonts/FreeMono12pt7b.h>
@@ -95,18 +96,38 @@ public:
     uint8_t getUnreadCount() const { return unreadMessageCount; }
     
     // Node information
-    void setNodeName(const String& name) { nodeName = name; needsUpdate = true; }
-    void setNodeAddress(const String& address) { nodeAddress = address; needsUpdate = true; }
-    void setNodeType(const String& type) { nodeType = type; needsUpdate = true; }
+    void setNodeName(const String& name) { 
+        if (nodeName != name) { nodeName = name; needsUpdate = true; }
+    }
+    void setNodeAddress(const String& address) { 
+        if (nodeAddress != address) { nodeAddress = address; needsUpdate = true; }
+    }
+    void setNodeType(const String& type) { 
+        if (nodeType != type) { nodeType = type; needsUpdate = true; }
+    }
     void setNetworkInfo(uint8_t nodeCount, const String& uptime) { 
-        knownNodes = nodeCount; 
-        networkUptime = uptime; 
-        needsUpdate = true;  // Trigger display update when network info changes
+        if (knownNodes != nodeCount) {
+            knownNodes = nodeCount;
+            needsUpdate = true;  // Only refresh on actual node count changes
+        }
+        networkUptime = uptime;  // Update uptime but don't trigger refresh for it
     }
     
     // Bluetooth information
-    void setBluetoothInfo(const String& deviceName, bool isConnected) { bleDeviceName = deviceName; bleConnected = isConnected; needsUpdate = true; }
-    void setWiFiInfo(const String& ssid, const String& ip) { wifiSSID = ssid; wifiIP = ip; needsUpdate = true; }
+    void setBluetoothInfo(const String& deviceName, bool isConnected) { 
+        if (bleDeviceName != deviceName || bleConnected != isConnected) {
+            bleDeviceName = deviceName; 
+            bleConnected = isConnected; 
+            needsUpdate = true;
+        }
+    }
+    void setWiFiInfo(const String& ssid, const String& ip) { 
+        if (wifiSSID != ssid || wifiIP != ip) {
+            wifiSSID = ssid; 
+            wifiIP = ip; 
+            needsUpdate = true;
+        }
+    }
     
     // Battery information
     void updateBatteryLevel();
@@ -118,8 +139,7 @@ public:
     void refresh();
     
 private:
-    // Display hardware
-    GxEPD2_BW<GxEPD2_213_FC1, GxEPD2_213_FC1::HEIGHT>* display;
+    // Display hardware (now uses EInkDisplay with framebuffer)
     bool displayInitialized;
     
     // Screen state
@@ -294,10 +314,6 @@ private:
 extern RealMeshDisplayManager* displayManager;
 extern RealMeshLEDManager* ledManager;
 extern RealMeshButtonManager* buttonManager;
-
-// Global display for backward compatibility
-extern SPIClass* hspi;
-extern GxEPD2_BW<GxEPD2_213_FC1, GxEPD2_213_FC1::HEIGHT>* display;
 
 // Global functions for backward compatibility
 bool initializeDisplay();

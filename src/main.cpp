@@ -39,6 +39,7 @@ void controlBluetooth(const String& args);
 void controlLED(const String& args);
 void controlScreen(const String& args);
 void sendMessage(const String& args);
+void broadcastMessage(const String& message);
 void scanNetwork();
 void rebootDevice();
 void showPrompt();
@@ -92,7 +93,8 @@ void setup() {
   
   meshNode = new RealMeshNode();
   
-  if (!meshNode->begin("node1", "local")) {
+  // Don't pass hardcoded names - let it load from storage or use stored desired names
+  if (!meshNode->begin("", "")) {
     Serial.println("ERROR: Failed to initialize mesh node");
     if (displayManager) {
       displayManager->showTemporaryMessage("Error", "Node Init Failed", DISPLAY_MSG_ERROR, 10000);
@@ -101,6 +103,20 @@ void setup() {
       ledManager->flashError(5);
     }
     return;
+  }
+  
+  // Update display with node identity immediately after initialization
+  if (displayManager && meshNode) {
+    displayManager->setNodeName(meshNode->getOwnAddress().nodeId);
+    displayManager->setNodeAddress(meshNode->getOwnAddress().getFullAddress());
+    displayManager->setNodeType(meshNode->isStationary() ? "Stationary" : "Mobile");
+    Serial.printf("[DEBUG] Initial display update - nodeId: %s, fullAddress: %s\n", 
+                  meshNode->getOwnAddress().nodeId.c_str(), 
+                  meshNode->getOwnAddress().getFullAddress().c_str());
+    
+    // Force immediate display update to show the loaded node identity
+    displayManager->updateContent();
+    Serial.println("[DEBUG] Forced display update with loaded node identity");
   }
   
   // Set up mesh event callbacks
@@ -143,8 +159,33 @@ void setup() {
   Serial.println("Initializing mobile API...");
   mobileAPI = new RealMeshAPI(meshNode);
   
+  // Register callback to push received messages to mobile app
+  meshNode->setOnMessageReceived([](const String& from, const String& message) {
+    Serial.printf("📨 Message received from %s: %s\n", from.c_str(), message.c_str());
+    
+    // Notify mobile app via BLE
+    if (mobileAPI) {
+      mobileAPI->notifyMessageReceived(from, message);
+    }
+    
+    // Show on display
+    if (displayManager) {
+      String displayFrom = (from == "@" || from == "svet") ? "svet" : from;
+      displayManager->addMessage(displayFrom, message, true);
+      displayManager->showTemporaryMessage("New Message", 
+        "From: " + displayFrom, DISPLAY_MSG_INFO, 5000);
+    }
+    
+    // LED notification
+    if (ledManager) {
+      ledManager->flashSuccess(2);
+    }
+  });
+  
   // Start BLE for mobile API by default
-  String deviceName = "RealMesh-" + String(ESP.getEfuseMac(), HEX).substring(8);
+  // Use last 4 characters of MAC address for unique device ID
+  String macStr = String(ESP.getEfuseMac(), HEX);
+  String deviceName = "RealMesh-" + macStr.substring(macStr.length() - 4);
   
   if (mobileAPI->beginBLE(deviceName)) {
     Serial.println("✅ BLE API ready");
@@ -173,7 +214,8 @@ void setup() {
   Serial.println("CLI Commands available:");
   Serial.println("  help      - Show available commands");
   Serial.println("  status    - Show node status");
-  Serial.println("  send <addr> <msg> - Send message");
+  Serial.println("  send <addr> <msg> - Send message (use 'svet' for public)");
+  Serial.println("  broadcast <msg>   - Send to public channel");
   Serial.println("  scan      - Scan for nodes");
   Serial.println("  reboot    - Restart device");
   Serial.println("");
@@ -226,15 +268,8 @@ void loop() {
     mobileAPI->loop();
   }
   
-  // Refresh display only when actually needed
-  if (displayManager) {
-    // Only refresh if there's new content or every 5 minutes for battery update
-    static uint32_t lastDisplayCheck = 0;
-    if (millis() - lastDisplayCheck > 5000) { // Check every 5 seconds instead of every 10ms
-      displayManager->refresh();
-      lastDisplayCheck = millis();
-    }
-  }
+  // Display refreshes automatically when content changes
+  // No need for periodic polling - saves power and reduces e-ink wear
   
   delay(10);
 }
@@ -304,6 +339,8 @@ void processCommand(const String& command) {
     controlScreen(args);
   } else if (cmd == "send") {
     sendMessage(args);
+  } else if (cmd == "broadcast") {
+    broadcastMessage(args);
   } else if (cmd == "scan") {
     scanNetwork();
   } else if (cmd == "reboot") {
@@ -339,7 +376,8 @@ void showHelp() {
   Serial.println("  ble off           - Disable BLE");
   Serial.println("");
   Serial.println("Messaging:");
-  Serial.println("  send <addr> <msg> - Send message to address");
+  Serial.println("  send <addr> <msg> - Send message (use 'svet' for public)");
+  Serial.println("  broadcast <msg>   - Send to public channel");
   Serial.println("");
   Serial.println("Network:");
   Serial.println("  scan              - Scan for nearby nodes");
@@ -379,6 +417,7 @@ void sendMessage(const String& args) {
   int spaceIndex = args.indexOf(' ');
   if (spaceIndex <= 0) {
     Serial.println("Usage: send <address> <message>");
+    Serial.println("  address: node address (e.g., 'dale@dale') or 'svet' for public channel");
     return;
   }
   
@@ -388,17 +427,53 @@ void sendMessage(const String& args) {
   if (meshNode) {
     bool success = meshNode->sendMessage(address, message);
     if (success) {
-      Serial.println("Message sent to " + address);
+      if (address == "svet" || address == "@") {
+        Serial.println("📢 Broadcast message sent to public channel (svet)");
+      } else {
+        Serial.println("✉️  Message sent to " + address);
+      }
       if (displayManager) {
-        displayManager->showTemporaryMessage("Message Sent", "To: " + address, DISPLAY_MSG_SUCCESS, 5000);
+        String displayTo = (address == "@") ? "Public" : address;
+        displayManager->showTemporaryMessage("Message Sent", "To: " + displayTo, DISPLAY_MSG_SUCCESS, 5000);
       }
       if (ledManager) {
         ledManager->flashSuccess(1);
       }
     } else {
-      Serial.println("Failed to send message");
+      Serial.println("❌ Failed to send message");
       if (displayManager) {
         displayManager->showTemporaryMessage("Send Failed", "To: " + address, DISPLAY_MSG_ERROR, 5000);
+      }
+      if (ledManager) {
+        ledManager->flashError(2);
+      }
+    }
+  } else {
+    Serial.println("ERROR: Node not initialized");
+  }
+}
+
+void broadcastMessage(const String& message) {
+  if (message.length() == 0) {
+    Serial.println("Usage: broadcast <message>");
+    Serial.println("  Sends message to public channel (same as 'send svet <message>')");
+    return;
+  }
+  
+  if (meshNode) {
+    bool success = meshNode->sendMessage("svet", message);
+    if (success) {
+      Serial.println("📢 Broadcast message sent to public channel (svet)");
+      if (displayManager) {
+        displayManager->showTemporaryMessage("Broadcast", "Message sent", DISPLAY_MSG_SUCCESS, 5000);
+      }
+      if (ledManager) {
+        ledManager->flashSuccess(1);
+      }
+    } else {
+      Serial.println("❌ Failed to broadcast message");
+      if (displayManager) {
+        displayManager->showTemporaryMessage("Broadcast Failed", "", DISPLAY_MSG_ERROR, 5000);
       }
       if (ledManager) {
         ledManager->flashError(2);
@@ -600,7 +675,9 @@ void controlBluetooth(const String& args) {
       return;
     }
     
-    String deviceName = "RealMesh-" + String(ESP.getEfuseMac(), HEX).substring(8);
+    // Use last 4 characters of MAC address for unique device ID
+    String macStr = String(ESP.getEfuseMac(), HEX);
+    String deviceName = "RealMesh-" + macStr.substring(macStr.length() - 4);
     
     if (mobileAPI->beginBLE(deviceName)) {
       Serial.println("✅ BLE enabled");

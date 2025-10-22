@@ -215,6 +215,8 @@ String RealMeshAPI::processJsonCommand(const String& jsonStr) {
         return controlLED(doc);
     } else if (command == "display") {
         return controlDisplay(doc);
+    } else if (command == "changeName") {
+        return changeName(doc);
     } else {
         return createResponse(false, "", "Unknown command: " + command);
     }
@@ -257,6 +259,7 @@ String RealMeshAPI::getNodes() {
 }
 
 String RealMeshAPI::sendMessage(const String& address, const String& message) {
+    // Supports direct messages (node@domain) or public broadcast (use "svet" or "@")
     if (!meshNode) {
         return createResponse(false, "", "Node not initialized");
     }
@@ -267,7 +270,8 @@ String RealMeshAPI::sendMessage(const String& address, const String& message) {
     
     bool success = meshNode->sendMessage(address, message);
     if (success) {
-        return createResponse(true, "Message sent successfully");
+        String info = (address == "svet" || address == "@") ? " to public channel" : " to " + address;
+        return createResponse(true, "Message sent" + info);
     } else {
         return createResponse(false, "", "Failed to send message");
     }
@@ -420,4 +424,61 @@ String RealMeshAPI::controlDisplay(const JsonDocument& doc) {
     } else {
         return createResponse(false, "", "Invalid display action");
     }
+}
+
+String RealMeshAPI::changeName(const JsonDocument& doc) {
+    if (!meshNode) {
+        return createResponse(false, "", "Node not initialized");
+    }
+    
+    String nodeId = doc["nodeId"];
+    String subdomain = doc["subdomain"];
+    
+    if (nodeId.isEmpty() || subdomain.isEmpty()) {
+        return createResponse(false, "", "Both nodeId and subdomain are required");
+    }
+    
+    String currentAddress = meshNode->getOwnAddress().getFullAddress();
+    String newAddress = nodeId + "@" + subdomain;
+    
+    meshNode->setDesiredName(nodeId, subdomain);
+    
+    // Update display immediately
+    if (displayManager) {
+        displayManager->setNodeName(nodeId);
+        displayManager->setNodeAddress(newAddress);
+        displayManager->showTemporaryMessage("Name Changed", 
+            "New: " + newAddress + "\nReboot required", DISPLAY_MSG_INFO, 8000);
+    }
+    
+    DynamicJsonDocument responseDoc(256);
+    responseDoc["oldAddress"] = currentAddress;
+    responseDoc["newAddress"] = newAddress;
+    responseDoc["rebootRequired"] = true;
+    
+    String responseStr;
+    serializeJson(responseDoc, responseStr);
+    return createResponse(true, responseStr, "Name change scheduled. Reboot required to apply.");
+}
+
+void RealMeshAPI::notifyMessageReceived(const String& from, const String& message) {
+    if (!bleEnabled || !bleCharacteristic) {
+        return;
+    }
+    
+    // Create notification JSON
+    DynamicJsonDocument doc(512);
+    doc["type"] = "message";
+    doc["from"] = from;
+    doc["message"] = message;
+    doc["timestamp"] = millis() / 1000;
+    
+    String notification;
+    serializeJson(doc, notification);
+    
+    // Send as BLE notification
+    bleCharacteristic->setValue(notification.c_str());
+    bleCharacteristic->notify();
+    
+    Serial.printf("📱 Notified mobile app: Message from %s\n", from.c_str());
 }

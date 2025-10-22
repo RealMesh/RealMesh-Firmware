@@ -1,15 +1,18 @@
 #include "RealMeshDisplay.h"
 #include "RealMeshConfig.h"
+#include "EInkDisplay.h"
 #include <Fonts/FreeMonoBold9pt7b.h>
 #include <Fonts/FreeMonoBold12pt7b.h>
 #include <Fonts/FreeMono9pt7b.h>
+#include <GxEPD2_BW.h>
+#include <epd/GxEPD2_213_FC1.h>
+#include <Adafruit_GFX.h>
 
 // ============================================================================
 // Global Display Variables
 // ============================================================================
 
-SPIClass* hspi = nullptr;
-GxEPD2_BW<GxEPD2_213_FC1, GxEPD2_213_FC1::HEIGHT>* display = nullptr;
+EInkDisplay* einkDisplay = nullptr;
 
 // Global manager instances
 RealMeshDisplayManager* displayManager = nullptr;
@@ -21,7 +24,7 @@ RealMeshButtonManager* buttonManager = nullptr;
 // ============================================================================
 
 RealMeshDisplayManager::RealMeshDisplayManager() 
-    : display(nullptr), displayInitialized(false),
+    : displayInitialized(false),
       currentScreen(SCREEN_HOME), needsUpdate(true), autoRefreshEnabled(false), lastUpdate(0),
       tempMessageActive(false), tempMessageTimeout(0),
       messageCount(0), unreadMessageCount(0), currentMessageIndex(0),
@@ -47,86 +50,31 @@ RealMeshDisplayManager::RealMeshDisplayManager()
 }
 
 bool RealMeshDisplayManager::begin() {
-    Serial.println("[DISPLAY] Initializing display manager...");
+    Serial.println("[DISPLAY] Initializing e-ink display...");
     
-    // Initialize VEXT power control (critical for Heltec Wireless Paper)
-    Serial.println("[DISPLAY] Initializing VEXT power...");
-    pinMode(PIN_VEXT_ENABLE, OUTPUT);
-    digitalWrite(PIN_VEXT_ENABLE, LOW);  // Enable display power (active low)
-    delay(200);  // Longer delay for power stabilization
+    // Create EInkDisplay instance
+    einkDisplay = new EInkDisplay(GEOMETRY_RAWMODE);
     
-    // Initialize SPI explicitly
-    Serial.println("[DISPLAY] Initializing SPI...");
-    SPI.begin(EINK_SCLK, -1, EINK_MOSI, EINK_CS); // SCLK, MISO, MOSI, CS
-    delay(100);
+    // init() does: BufferOffset setup, connect(), allocateBuffer(), sendInitCommands(), resetDisplay()
+    if (!einkDisplay->init()) {
+        Serial.println("[DISPLAY] Failed to initialize display!");
+        return false;
+    }
     
-    Serial.println("[DISPLAY] Creating GxEPD2 display...");
-    
-    // Initialize display using simple constructor
-    display = new GxEPD2_BW<GxEPD2_213_FC1, GxEPD2_213_FC1::HEIGHT>(
-        GxEPD2_213_FC1(EINK_CS, EINK_DC, EINK_RES, EINK_BUSY, SPI)
-    );
-    
-    Serial.println("[DISPLAY] Calling display->init()...");
-    display->init(115200, true, 2, false); // Enable diagnostic output
-    delay(100);
-    
-    Serial.println("[DISPLAY] Setting rotation and text wrap...");
-    display->setRotation(3);  // Fix 90-degree clockwise rotation
-    display->setTextWrap(false);
-    
-    Serial.println("[DISPLAY] Testing display with immediate content...");
-    
-    // Test with immediate simple display - try multiple approaches
-    Serial.println("[DISPLAY] Showing RealMesh welcome screen...");
-    
-    // Show cool RealMesh welcome screen
-    display->setFullWindow();
-    display->firstPage();
-    do {
-        display->fillScreen(GxEPD_WHITE);
-        display->setTextColor(GxEPD_BLACK);
-        
-        // Title
-        display->setTextSize(2);
-        display->setCursor(35, 25);
-        display->print("RealMesh! Change node name.");
-        
-        // Subtitle  
-        display->setTextSize(1);
-        display->setCursor(60, 45);
-        display->print("Network");
-        
-        // Version/Status
-        display->setCursor(45, 65);
-        display->print("v1.0 Ready");
-        
-        // Bottom line
-        display->setCursor(20, 85);
-        display->print("Mesh Networking");
-        
-        // Simple border
-        display->drawRect(5, 5, 240, 118, GxEPD_BLACK);
-        
-    } while (display->nextPage());
-    
-    delay(3000);  // Show welcome screen for 3 seconds
-    
-    Serial.println("[DISPLAY] Welcome screen completed, switching to home screen...");
+    Serial.println("[DISPLAY] Display initialized successfully");
     
     displayInitialized = true;
-    currentScreen = SCREEN_HOME;  // Explicitly set to home screen
-    needsUpdate = true;  // Trigger immediate update to show home screen
-    updateContent();  // Force immediate update to home screen
+    currentScreen = SCREEN_HOME;
+    needsUpdate = true;
+    
     Serial.println("[DISPLAY] Display manager initialized successfully");
     return true;
 }
 
 void RealMeshDisplayManager::end() {
-    if (display) {
-        display->hibernate();
-        delete display;
-        display = nullptr;
+    if (einkDisplay) {
+        delete einkDisplay;
+        einkDisplay = nullptr;
     }
     
     displayInitialized = false;
@@ -153,32 +101,170 @@ void RealMeshDisplayManager::setCurrentScreen(DisplayScreen screen) {
 }
 
 void RealMeshDisplayManager::updateContent() {
-    if (!displayInitialized || !display) {
+    if (!displayInitialized || !einkDisplay) {
         Serial.println("[DISPLAY] Update skipped - not initialized");
         return;
     }
     
-    Serial.printf("[DISPLAY] Starting display update for screen %d...\n", currentScreen);
+    Serial.printf("[DISPLAY] ========================================\n");
+    Serial.printf("[DISPLAY] UPDATE CONTENT - Screen %d\n", currentScreen);
+    Serial.printf("[DISPLAY] Node: %s, Address: %s\n", nodeName.c_str(), nodeAddress.c_str());
+    Serial.printf("[DISPLAY] ========================================\n");
     
-    display->setFullWindow();
-    display->firstPage();
+    // Clear buffer first
+    uint8_t* buf = einkDisplay->getBuffer();
+    if (!buf) {
+        Serial.println("[DISPLAY] ERROR: getBuffer() returned NULL!");
+        return;
+    }
     
+    // Draw directly to GxEPD2 and trigger refresh immediately
+    // This bypasses the OLEDDisplay buffer entirely
+    auto* gxDisplay = einkDisplay->getGxEPD2();
+    if (!gxDisplay) {
+        Serial.println("[DISPLAY] ERROR: GxEPD2 is NULL!");
+        return;
+    }
+    
+    Serial.println("[DISPLAY] Drawing directly to GxEPD2...");
+    
+    // Use GxEPD2 native rendering
+    gxDisplay->setFullWindow();
+    gxDisplay->firstPage();
     do {
-        display->fillScreen(GxEPD_WHITE);
-        display->setTextColor(GxEPD_BLACK);
+        gxDisplay->fillScreen(GxEPD_WHITE);
+        gxDisplay->setTextColor(GxEPD_BLACK);
+        gxDisplay->setTextWrap(false);
         
-        // Draw header with battery and node name
-        drawHeader();
+        // Draw header
+        gxDisplay->setFont(&FreeMono9pt7b);
+        gxDisplay->setCursor(5, 10);
+        gxDisplay->print(nodeName.length() > 0 ? nodeName : "RealMesh");
         
-        // Draw main content based on current screen
-        drawContent();
+        gxDisplay->setCursor(195, 10);
+        gxDisplay->print(String(batteryPercentage) + "%");
         
-        // Draw footer with screen indicators
-        drawFooter();
+        gxDisplay->drawLine(0, 12, 249, 12, GxEPD_BLACK);
         
-    } while (display->nextPage());
+        // Draw content based on current screen
+        switch (currentScreen) {
+            case SCREEN_HOME:
+                // Node identity screen
+                gxDisplay->setFont(&FreeMonoBold12pt7b);
+                gxDisplay->setCursor(10, 40);
+                if (nodeAddress.length() > 0) {
+                    gxDisplay->print(nodeAddress);
+                } else {
+                    gxDisplay->print("RealMesh");
+                }
+                
+                // Draw status
+                gxDisplay->setFont(&FreeMono9pt7b);
+                gxDisplay->setCursor(60, 70);
+                if (knownNodes == 0) {
+                    gxDisplay->print("No nodes found");
+                } else if (knownNodes == 1) {
+                    gxDisplay->print("1 node online");
+                } else {
+                    gxDisplay->print(String(knownNodes) + " nodes online");
+                }
+                break;
+                
+            case SCREEN_MESSAGES:
+                // Messages screen
+                gxDisplay->setFont(&FreeMono9pt7b);
+                gxDisplay->setCursor(5, 25);
+                gxDisplay->print("MESSAGES");
+                
+                if (messageCount == 0) {
+                    gxDisplay->setCursor(30, 60);
+                    gxDisplay->print("No messages");
+                } else {
+                    int y = 40;
+                    for (int i = max(0, messageCount - 3); i < messageCount && y < 100; i++) {
+                        gxDisplay->setCursor(5, y);
+                        String msg = messages[i].from + ": " + messages[i].content.substring(0, 18);
+                        gxDisplay->print(msg);
+                        y += 20;
+                    }
+                }
+                break;
+                
+            case SCREEN_NODE_INFO:
+                // Node info screen
+                gxDisplay->setFont(&FreeMono9pt7b);
+                gxDisplay->setCursor(5, 25);
+                gxDisplay->print("NODE INFO");
+                
+                gxDisplay->setCursor(5, 45);
+                gxDisplay->print("Type: " + nodeType);
+                
+                gxDisplay->setCursor(5, 65);
+                gxDisplay->print("Uptime: " + networkUptime);
+                
+                gxDisplay->setCursor(5, 85);
+                gxDisplay->print("Battery: " + String(batteryVoltage, 2) + "V");
+                break;
+        }
+        
+        // Draw footer
+        gxDisplay->drawLine(0, 107, 249, 107, GxEPD_BLACK);
+        
+        // Draw screen indicators
+        for (int i = 0; i < SCREEN_COUNT; i++) {
+            int dotX = (250 / 2) - ((SCREEN_COUNT * DOT_SPACING) / 2) + (i * DOT_SPACING);
+            int dotY = 110;
+            
+            if (i == currentScreen) {
+                gxDisplay->fillRect(dotX, dotY, DOT_SIZE, DOT_SIZE, GxEPD_BLACK);
+            } else {
+                gxDisplay->drawRect(dotX, dotY, DOT_SIZE, DOT_SIZE, GxEPD_BLACK);
+            }
+        }
+        
+    } while (gxDisplay->nextPage());
     
-    Serial.println("[DISPLAY] Display update completed");
+    // Hibernate the display
+    gxDisplay->hibernate();
+    
+    Serial.println("[DISPLAY] GxEPD2 direct rendering complete (bypassed OLEDDisplay buffer)");
+    
+
+    
+    /* ORIGINAL CONTENT - COMMENTED OUT FOR TEST
+    // Draw to the framebuffer using OLEDDisplay methods
+    einkDisplay->setColor(BLACK);
+    einkDisplay->setTextAlignment(TEXT_ALIGN_LEFT);
+    
+    // Draw header
+    einkDisplay->setFont(ArialMT_Plain_10);
+    einkDisplay->drawString(5, 0, nodeName.length() > 0 ? nodeName : "RealMesh");
+    einkDisplay->drawString(200, 0, String(batteryPercentage) + "%");
+    einkDisplay->drawLine(0, 12, 250, 12);
+    */
+    
+    /* ORIGINAL CONTENT - COMMENTED OUT FOR TEST
+    // Draw main content
+    einkDisplay->setFont(ArialMT_Plain_16);
+    if (nodeAddress.length() > 0) {
+        einkDisplay->drawString(5, 30, nodeAddress);
+    } else {
+        einkDisplay->drawString(5, 30, "RealMesh");
+    }
+    
+    einkDisplay->setFont(ArialMT_Plain_10);
+    if (knownNodes == 0) {
+        einkDisplay->drawString(50, 60, "Searching...");
+    } else {
+        einkDisplay->drawString(30, 60, String(knownNodes) + " Nodes Found");
+    }
+    
+    // Draw footer
+    einkDisplay->drawLine(0, 107, 250, 107);
+    */
+    
+    // No need to call forceDisplay() - we already refreshed with GxEPD2 directly
+    Serial.println("[DISPLAY] ======== UPDATE COMPLETE ========");
     lastUpdate = millis();
     needsUpdate = false;
 }
@@ -290,25 +376,25 @@ void RealMeshDisplayManager::refresh() {
 }
 
 void RealMeshDisplayManager::drawHeader() {
-    display->setTextSize(1);
+    einkDisplay->setFont(ArialMT_Plain_10);
     
     // Node name (left side)
-    display->setCursor(MARGIN, 10);
-    display->print(nodeName.length() > 0 ? nodeName : "RealMesh");
+    einkDisplay->setTextAlignment(TEXT_ALIGN_LEFT);
+    einkDisplay->drawString(MARGIN, 10, nodeName.length() > 0 ? nodeName : "RealMesh");
     
     // Battery percentage (right side)  
     String batteryText = String(batteryPercentage) + "%";
-    display->setCursor(SCREEN_WIDTH - 40, 10);  // Simple right positioning
-    display->print(batteryText);
+    einkDisplay->setTextAlignment(TEXT_ALIGN_RIGHT);
+    einkDisplay->drawString(SCREEN_WIDTH - MARGIN, 10, batteryText);
     
     // Draw line under header
-    display->drawLine(0, HEADER_HEIGHT, SCREEN_WIDTH, HEADER_HEIGHT, GxEPD_BLACK);
+    einkDisplay->drawHorizontalLine(0, HEADER_HEIGHT, SCREEN_WIDTH);
 }
 
 void RealMeshDisplayManager::drawFooter() {
     // Draw line above footer
     int footerY = SCREEN_HEIGHT - FOOTER_HEIGHT;
-    display->drawLine(0, footerY, SCREEN_WIDTH, footerY, GxEPD_BLACK);
+    einkDisplay->drawHorizontalLine(0, footerY, SCREEN_WIDTH);
     
     drawScreenIndicators();
 }
@@ -324,10 +410,10 @@ void RealMeshDisplayManager::drawScreenIndicators() {
         
         if (i == currentScreen) {
             // Filled dot for current screen
-            display->fillCircle(dotX + DOT_SIZE/2, dotY + DOT_SIZE/2, DOT_SIZE/2, GxEPD_BLACK);
+            einkDisplay->fillCircle(dotX + DOT_SIZE/2, dotY + DOT_SIZE/2, DOT_SIZE/2);
         } else {
             // Empty dot for other screens
-            display->drawCircle(dotX + DOT_SIZE/2, dotY + DOT_SIZE/2, DOT_SIZE/2, GxEPD_BLACK);
+            einkDisplay->drawCircle(dotX + DOT_SIZE/2, dotY + DOT_SIZE/2, DOT_SIZE/2);
         }
     }
 }
@@ -344,178 +430,73 @@ void RealMeshDisplayManager::drawContent() {
         case SCREEN_NODE_INFO:
             drawNodeInfoScreen();
             break;
+        case SCREEN_COUNT:
+            // Not a real screen, just marks the count
+            break;
     }
 }
 
 void RealMeshDisplayManager::drawHomeScreen() {
     int contentY = HEADER_HEIGHT + 10;
     
-    // RealMesh title - use basic text size
-    display->setTextSize(2);
-    display->setCursor(70, contentY + 15);
-    display->print("RealMesh");
+    // Node identity - show the actual node address (e.g., "dale@dale")
+    einkDisplay->setFont(ArialMT_Plain_16);
+    einkDisplay->setTextAlignment(TEXT_ALIGN_LEFT);
+    if (nodeAddress.length() > 0) {
+        einkDisplay->drawString(5, contentY + 15, nodeAddress); // Show dale@dale
+    } else {
+        einkDisplay->drawString(5, contentY + 15, "RealMesh"); // Fallback if no identity set yet
+    }
     
     // Node count in the center
-    display->setTextSize(1);
+    einkDisplay->setFont(ArialMT_Plain_10);
     int nodeCountY = contentY + 40;
     
     // Show network status
     if (knownNodes == 0) {
-        display->setCursor(50, nodeCountY);
-        display->print("Searching...");
+        einkDisplay->drawString(50, nodeCountY, "Searching...");
     } else if (knownNodes == 1) {
-        display->setCursor(45, nodeCountY);
-        display->print("1 Node Found");
+        einkDisplay->drawString(45, nodeCountY, "1 Node Found");
     } else {
-        display->setCursor(30, nodeCountY);
-        display->print(String(knownNodes) + " Nodes Found");
+        einkDisplay->drawString(30, nodeCountY, String(knownNodes) + " Nodes Found");
     }
     
     // Message indicator if there are unread messages
     if (unreadMessageCount > 0) {
-        display->setCursor(20, contentY + 60);
-        display->print(String(unreadMessageCount) + " new message");
-        if (unreadMessageCount != 1) display->print("s");
+        String msgText = String(unreadMessageCount) + " new message" + (unreadMessageCount != 1 ? "s" : "");
+        einkDisplay->drawString(20, contentY + 60, msgText);
         
         // Notification icon
-        display->fillCircle(15, contentY + 55, 3, GxEPD_BLACK);
+        einkDisplay->fillCircle(15, contentY + 55, 3);
     }
 }
 
 void RealMeshDisplayManager::drawMessagesScreen() {
-    int contentY = HEADER_HEIGHT + 5;
-    
-    display->setFont(&FreeMonoBold12pt7b);
-    display->setCursor(MARGIN, contentY + 15);
-    display->print("Messages");
-    
-    if (unreadMessageCount > 0) {
-        String unreadText = "(" + String(unreadMessageCount) + " new)";
-        display->setFont(&FreeMono9pt7b);
-        display->setCursor(MARGIN + 80, contentY + 15);
-        display->print(unreadText);
-    }
-    
-    // Show recent messages
-    display->setFont(&FreeMono9pt7b);
-    int msgY = contentY + 35;
-    int showCount = min((int)messageCount, 3);
-    
-    if (showCount == 0) {
-        display->setCursor(MARGIN, msgY);
-        display->print("No messages");
-    } else {
-        for (int i = messageCount - showCount; i < messageCount; i++) {
-            // Show unread indicator
-            if (!messages[i].isRead) {
-                display->fillCircle(MARGIN + 2, msgY - 5, 2, GxEPD_BLACK);
-            }
-            
-            // From field
-            display->setCursor(MARGIN + 8, msgY);
-            String fromStr = messages[i].from;
-            if (fromStr.length() > 12) fromStr = fromStr.substring(0, 12) + "...";
-            display->print(fromStr + ":");
-            
-            // Message content
-            msgY += 12;
-            display->setCursor(MARGIN + 8, msgY);
-            String contentStr = messages[i].content;
-            if (contentStr.length() > 25) contentStr = contentStr.substring(0, 25) + "...";
-            display->print(contentStr);
-            
-            msgY += 18;
-        }
-    }
+    // TODO: Convert to OLEDDisplay API
+    einkDisplay->setFont(ArialMT_Plain_16);
+    einkDisplay->setTextAlignment(TEXT_ALIGN_LEFT);
+    einkDisplay->drawString(MARGIN, HEADER_HEIGHT + 20, "Messages Screen");
 }
 
 void RealMeshDisplayManager::drawNewMessageScreen() {
-    int contentY = HEADER_HEIGHT + 5;
-    
-    display->setFont(&FreeMonoBold12pt7b);
-    display->setCursor(MARGIN, contentY + 15);
-    display->print("Latest Message");
-    
-    display->setFont(&FreeMono9pt7b);
-    
-    if (messageCount > 0) {
-        StoredMessage& msg = messages[messageCount - 1];
-        
-        // From
-        display->setCursor(MARGIN, contentY + 35);
-        display->print("From: " + msg.from);
-        
-        // Time
-        display->setCursor(MARGIN, contentY + 50);
-        display->print("Time: " + formatTime(msg.timestamp));
-        
-        // Message content (wrapped)
-        drawWrappedText(msg.content, MARGIN, contentY + 65, SCREEN_WIDTH - 2*MARGIN);
-        
-        // Mark as read if currently viewing
-        if (!msg.isRead) {
-            msg.isRead = true;
-            unreadMessageCount--;
-        }
-    } else {
-        display->setCursor(MARGIN, contentY + 35);
-        display->print("No messages received");
-    }
+    // TODO: Convert to OLEDDisplay API
+    einkDisplay->setFont(ArialMT_Plain_16);
+    einkDisplay->setTextAlignment(TEXT_ALIGN_LEFT);
+    einkDisplay->drawString(MARGIN, HEADER_HEIGHT + 20, "New Message Screen");
 }
 
 void RealMeshDisplayManager::drawNodeInfoScreen() {
-    int contentY = HEADER_HEIGHT + 5;
-    
-    display->setFont(&FreeMonoBold12pt7b);
-    display->setCursor(MARGIN, contentY + 15);
-    display->print("Node Info");
-    
-    display->setFont(&FreeMono9pt7b);
-    
-    // Node address
-    display->setCursor(MARGIN, contentY + 35);
-    display->print("Addr: " + nodeAddress);
-    
-    // Node type
-    display->setCursor(MARGIN, contentY + 50);
-    display->print("Type: " + nodeType);
-    
-    // Network info
-    display->setCursor(MARGIN, contentY + 65);
-    display->print("Nodes: " + String(knownNodes));
-    
-    // Uptime
-    display->setCursor(MARGIN, contentY + 80);
-    display->print("Up: " + networkUptime);
+    // TODO: Convert to OLEDDisplay API
+    einkDisplay->setFont(ArialMT_Plain_16);
+    einkDisplay->setTextAlignment(TEXT_ALIGN_LEFT);
+    einkDisplay->drawString(MARGIN, HEADER_HEIGHT + 20, "Node Info Screen");
 }
 
 void RealMeshDisplayManager::drawBluetoothInfoScreen() {
-    int contentY = HEADER_HEIGHT + 5;
-    
-    display->setFont(&FreeMonoBold12pt7b);
-    display->setCursor(MARGIN, contentY + 15);
-    display->print("Connectivity");
-    
-    display->setFont(&FreeMono9pt7b);
-    
-    // Bluetooth status
-    display->setCursor(MARGIN, contentY + 35);
-    display->print("BLE: " + bleDeviceName);
-    
-    display->setCursor(MARGIN, contentY + 50);
-    display->print("Status: " + String(bleConnected ? "Connected" : "Ready"));
-    
-    // WiFi status
-    display->setCursor(MARGIN, contentY + 65);
-    if (wifiSSID.length() > 0) {
-        display->print("WiFi: " + wifiSSID);
-        if (wifiIP.length() > 0) {
-            display->setCursor(MARGIN, contentY + 80);
-            display->print("IP: " + wifiIP);
-        }
-    } else {
-        display->print("WiFi: Off");
-    }
+    // TODO: Convert to OLEDDisplay API
+    einkDisplay->setFont(ArialMT_Plain_16);
+    einkDisplay->setTextAlignment(TEXT_ALIGN_LEFT);
+    einkDisplay->drawString(MARGIN, HEADER_HEIGHT + 20, "BT Info Screen");
 }
 
 String RealMeshDisplayManager::formatTime(uint32_t timestamp) {
@@ -531,51 +512,24 @@ uint16_t RealMeshDisplayManager::getTextWidth(const String& text, const GFXfont*
 }
 
 void RealMeshDisplayManager::drawCenteredText(const String& text, int16_t y, const GFXfont* font) {
-    if (font) display->setFont(font);
-    
-    uint16_t textWidth = getTextWidth(text, font);
-    int16_t x = (SCREEN_WIDTH - textWidth) / 2;
-    display->setCursor(x, y);
-    display->print(text);
+    // TODO: Convert to OLEDDisplay API
+    einkDisplay->setFont(ArialMT_Plain_10);
+    einkDisplay->setTextAlignment(TEXT_ALIGN_CENTER);
+    einkDisplay->drawString(SCREEN_WIDTH / 2, y, text);
 }
 
 void RealMeshDisplayManager::drawRightAlignedText(const String& text, int16_t x, int16_t y, const GFXfont* font) {
-    if (font) display->setFont(font);
-    
-    uint16_t textWidth = getTextWidth(text, font);
-    display->setCursor(x - textWidth, y);
-    display->print(text);
+    // TODO: Convert to OLEDDisplay API
+    einkDisplay->setFont(ArialMT_Plain_10);
+    einkDisplay->setTextAlignment(TEXT_ALIGN_RIGHT);
+    einkDisplay->drawString(x, y, text);
 }
 
 void RealMeshDisplayManager::drawWrappedText(const String& text, int16_t x, int16_t y, uint16_t maxWidth, const GFXfont* font) {
-    if (font) display->setFont(font);
-    
-    // Simple word wrapping implementation
-    String line = "";
-    int currentY = y;
-    
-    for (int i = 0; i < text.length(); i++) {
-        char c = text.charAt(i);
-        
-        if (c == ' ' || i == text.length() - 1) {
-            String testLine = line + c;
-            if (getTextWidth(testLine) > maxWidth && line.length() > 0) {
-                display->setCursor(x, currentY);
-                display->print(line);
-                currentY += 12;
-                line = String(c);
-            } else {
-                line = testLine;
-            }
-        } else {
-            line += c;
-        }
-    }
-    
-    if (line.length() > 0) {
-        display->setCursor(x, currentY);
-        display->print(line);
-    }
+    // TODO: Convert to OLEDDisplay API
+    einkDisplay->setFont(ArialMT_Plain_10);
+    einkDisplay->setTextAlignment(TEXT_ALIGN_LEFT);
+    einkDisplay->drawString(x, y, text);
 }
 
 // ============================================================================
