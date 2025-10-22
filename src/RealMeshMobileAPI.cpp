@@ -1,6 +1,7 @@
 #include "RealMeshMobileAPI.h"
 #include <esp_gap_ble_api.h>
 #include <esp_gatts_api.h>
+#include <vector>
 
 RealMeshAPI::RealMeshAPI(RealMeshNode* node) : 
     meshNode(node), 
@@ -39,10 +40,9 @@ public:
         command.trim();
         
         if (command.length() > 0) {
-            Serial.printf("BLE command: %s\n", command.c_str());
-            String response = api->processJsonCommand(command);
-            pCharacteristic->setValue(response.c_str());
-            pCharacteristic->notify();
+            Serial.printf("BLE command received: %s\n", command.c_str());
+            // Queue command for async processing instead of blocking BLE task
+            api->queueCommand(command, pCharacteristic);
         }
     }
 };
@@ -148,7 +148,37 @@ void RealMeshAPI::loop() {
     if (wifiEnabled) {
         handleTcpClient();
     }
-    // BLE handles callbacks automatically, no polling needed
+    
+    // Process any pending BLE commands asynchronously
+    processPendingCommands();
+}
+
+void RealMeshAPI::queueCommand(const String& command, BLECharacteristic* characteristic) {
+    PendingCommand cmd;
+    cmd.command = command;
+    cmd.characteristic = characteristic;
+    pendingCommands.push_back(cmd);
+    Serial.printf("Command queued (total: %d)\n", pendingCommands.size());
+}
+
+void RealMeshAPI::processPendingCommands() {
+    if (pendingCommands.empty()) {
+        return;
+    }
+    
+    // Process one command at a time to avoid blocking
+    PendingCommand cmd = pendingCommands.front();
+    pendingCommands.erase(pendingCommands.begin());
+    
+    Serial.printf("Processing queued command: %s\n", cmd.command.c_str());
+    String response = processJsonCommand(cmd.command);
+    
+    // Send response back via BLE
+    if (cmd.characteristic && bleEnabled) {
+        cmd.characteristic->setValue(response.c_str());
+        cmd.characteristic->notify();
+        Serial.println("Response sent via BLE");
+    }
 }
 
 void RealMeshAPI::handleTcpClient() {

@@ -183,9 +183,19 @@ void setup() {
   });
   
   // Start BLE for mobile API by default
-  // Use last 4 characters of MAC address for unique device ID
-  String macStr = String(ESP.getEfuseMac(), HEX);
-  String deviceName = "RealMesh-" + macStr.substring(macStr.length() - 4);
+  // Use node's address if set, otherwise use last 4 characters of MAC address
+  String deviceName;
+  if (meshNode && meshNode->getOwnAddress().getFullAddress() != "@") {
+    // Node has a custom address set - use it as device name
+    deviceName = meshNode->getOwnAddress().getFullAddress();
+  } else {
+    // Fallback to MAC-based name
+    uint64_t mac = ESP.getEfuseMac();
+    char macStr[13];
+    snprintf(macStr, sizeof(macStr), "%012llX", mac);
+    // Take LAST 4 characters (2 bytes)
+    deviceName = "RealMesh-" + String(&macStr[8]);
+  }
   
   if (mobileAPI->beginBLE(deviceName)) {
     Serial.println("✅ BLE API ready");
@@ -675,9 +685,19 @@ void controlBluetooth(const String& args) {
       return;
     }
     
-    // Use last 4 characters of MAC address for unique device ID
-    String macStr = String(ESP.getEfuseMac(), HEX);
-    String deviceName = "RealMesh-" + macStr.substring(macStr.length() - 4);
+    // Use node's address if set, otherwise use last 4 characters of MAC address
+    String deviceName;
+    if (meshNode && meshNode->getOwnAddress().getFullAddress() != "@") {
+      // Node has a custom address set - use it as device name
+      deviceName = meshNode->getOwnAddress().getFullAddress();
+    } else {
+      // Fallback to MAC-based name
+      uint64_t mac = ESP.getEfuseMac();
+      char macStr[13];
+      snprintf(macStr, sizeof(macStr), "%012llX", mac);
+      // Take LAST 4 characters (2 bytes)
+      deviceName = "RealMesh-" + String(&macStr[8]);
+    }
     
     if (mobileAPI->beginBLE(deviceName)) {
       Serial.println("✅ BLE enabled");

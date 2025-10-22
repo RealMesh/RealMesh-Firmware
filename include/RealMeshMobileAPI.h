@@ -61,8 +61,17 @@ private:
     WiFiServer* tcpServer;
     bool wifiEnabled;
     
+    // Command queue for async processing
+    struct PendingCommand {
+        String command;
+        BLECharacteristic* characteristic;
+    };
+    std::vector<PendingCommand> pendingCommands;
+    
     // Helper methods
     String createResponse(bool success, const String& data = "", const String& error = "");
     void handleTcpClient();
     void handleBLEClient();
+    void processPendingCommands();
+    void queueCommand(const String& command, BLECharacteristic* characteristic);
 };
