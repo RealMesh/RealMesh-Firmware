@@ -35,6 +35,9 @@ public:
     bool isWiFiEnabled() const { return wifiEnabled; }
     String getBLEDeviceName() const { return bleDeviceName; }
     
+    // Message notification (called when messages are received)
+    void notifyMessageReceived(const String& from, const String& message);
+    
     // JSON API methods
     String processJsonCommand(const String& jsonStr);
     String getStatus();
@@ -43,6 +46,7 @@ public:
     String getNetworkStats();
     String controlLED(const JsonDocument& doc);
     String controlDisplay(const JsonDocument& doc);
+    String changeName(const JsonDocument& doc);
     
 private:
     RealMeshNode* meshNode;
